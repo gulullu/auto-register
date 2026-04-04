@@ -1145,11 +1145,7 @@ class ChatGPTClient:
 
             if self._state_is_email_otp(state):
                 self._enter_stage("otp", describe_flow_state(state))
-                self._log("等待邮箱验证码（注册阶段，等待6位OTP）...")
-
-                # 注册阶段第一封邮件始终为 6 位 OTP 验证码，
-                # continue-registration 确认链接是第二封邮件（约3分钟后），
-                # 仅在 OAuth 登录阶段(oauth_client)处理。
+                self._log("等待邮箱验证码...")
                 otp_code = skymail_client.wait_for_verification_code(
                     email, timeout=otp_wait_timeout
                 )

@@ -149,24 +149,6 @@ class EmailServiceAdapter:
             self.log_fn(f"成功获取验证码: {code}")
         return code
 
-    def wait_for_confirmation_link(
-        self,
-        email: str,
-        timeout: int = 90,
-        otp_sent_at: float | None = None,
-    ) -> str | None:
-        """等待邮件中的 OpenAI continue-registration 确认链接。"""
-        get_link = getattr(self.email_service, "get_confirmation_link", None)
-        if not callable(get_link):
-            self.log_fn("当前邮箱服务不支持 get_confirmation_link，跳过链接提取")
-            return None
-        self.log_fn(f"正在等待邮箱 {email} 的确认链接 ({timeout}s)...")
-        link = get_link(email=email, timeout=timeout)
-        if link:
-            link = str(link).strip()
-            self.log_fn(f"成功获取确认链接: {link[:120]}")
-        return link or None
-
 
 class RefreshTokenRegistrationEngine:
     """Refresh token 注册引擎。"""

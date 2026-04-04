@@ -116,61 +116,11 @@ class CFGmailCatchAllMailbox(BaseMailbox):
         return f"{random.choice(adjectives)}{random.choice(nouns)}{random.randint(10, 999)}".lower()
 
     def _connect_imap(self, account_cfg: _CatchAllAccount):
-        proxy_url = None
         if self.proxy:
-            proxy_url = self.proxy.get("https") or self.proxy.get("http")
-
-        if proxy_url:
-            try:
-                conn = self._connect_imap_via_proxy(account_cfg, proxy_url)
-                return conn
-            except Exception as e:
-                self._log(f"[CFGmailCatchAll] 代理 IMAP 连接失败({e})，尝试直连...")
-
+            self._log(
+                "[CFGmailCatchAll] 当前 provider 已收到 proxy，但 Gmail IMAP 直连不复用 requests 代理配置"
+            )
         conn = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-        conn.login(account_cfg.gmail_user, account_cfg.gmail_app_pass)
-        conn.select("INBOX")
-        return conn
-
-    def _connect_imap_via_proxy(self, account_cfg: _CatchAllAccount, proxy_url: str):
-        """通过代理连接 Gmail IMAP（使用 PySocks）。"""
-        import socket
-        import ssl
-        import socks
-        from urllib.parse import urlsplit, unquote
-
-        parts = urlsplit(proxy_url)
-        proxy_host = parts.hostname
-        proxy_port = parts.port or 7777
-        proxy_user = unquote(parts.username) if parts.username else None
-        proxy_pass = unquote(parts.password or "") if parts.username else None
-
-        scheme = (parts.scheme or "").lower()
-        if "socks5" in scheme or "socks" in scheme:
-            proxy_type = socks.SOCKS5
-        elif "socks4" in scheme:
-            proxy_type = socks.SOCKS4
-        else:
-            proxy_type = socks.HTTP
-
-        # 临时替换 socket.create_connection，让 imaplib 走代理
-        _orig_create_conn = socket.create_connection
-
-        def _proxy_create_connection(address, timeout=None, *args, **kwargs):
-            sock = socks.socksocket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.set_proxy(proxy_type, proxy_host, proxy_port,
-                           username=proxy_user, password=proxy_pass)
-            if timeout:
-                sock.settimeout(timeout)
-            sock.connect(address)
-            return sock
-
-        try:
-            socket.create_connection = _proxy_create_connection
-            conn = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-        finally:
-            socket.create_connection = _orig_create_conn
-
         conn.login(account_cfg.gmail_user, account_cfg.gmail_app_pass)
         conn.select("INBOX")
         return conn
@@ -309,94 +259,3 @@ class CFGmailCatchAllMailbox(BaseMailbox):
             poll_once=poll_once,
             timeout_message=f"CFGmailCatchAll 等待验证码超时 ({timeout}s)",
         )
-
-    def _decode_message_raw(self, message_bytes: bytes) -> str:
-        """解码邮件但保留 HTML 标签（用于提取链接 href）。"""
-        try:
-            msg = email.message_from_bytes(message_bytes)
-        except Exception:
-            return ""
-        chunks = []
-        if msg.is_multipart():
-            for part in msg.walk():
-                ct = part.get_content_type() or ""
-                if ct in ("text/html", "text/plain"):
-                    payload = part.get_payload(decode=True)
-                    if payload and isinstance(payload, (bytes, bytearray)):
-                        charset = part.get_content_charset() or "utf-8"
-                        try:
-                            chunks.append(payload.decode(charset, errors="ignore"))
-                        except Exception:
-                            chunks.append(payload.decode("utf-8", errors="ignore"))
-        else:
-            payload = msg.get_payload(decode=True)
-            if payload and isinstance(payload, (bytes, bytearray)):
-                charset = msg.get_content_charset() or "utf-8"
-                try:
-                    chunks.append(payload.decode(charset, errors="ignore"))
-                except Exception:
-                    chunks.append(payload.decode("utf-8", errors="ignore"))
-        return "\n".join(chunks)
-
-    def wait_for_link(
-        self,
-        account: MailboxAccount,
-        link_pattern: str = "continue-registration",
-        timeout: int = 120,
-        before_ids: Optional[set] = None,
-        **kwargs,
-    ) -> Optional[str]:
-        """等待并从邮件中提取确认链接（保留原始 HTML 以读取 href）。"""
-        account_cfg, _reason, _lease_left = self._select_account()
-        seen = set(before_ids or [])
-        target_email = str(getattr(account, 'email', '') or '').lower()
-
-        def poll_once() -> Optional[str]:
-            conn = self._connect_imap(account_cfg)
-            try:
-                for message_id in self._search_ids(conn):
-                    if not message_id or message_id in seen:
-                        continue
-                    seen.add(message_id)
-                    status, data = conn.fetch(message_id, "(RFC822)")
-                    if status != "OK" or not data:
-                        continue
-                    message_bytes = b""
-                    for part in data:
-                        if isinstance(part, tuple) and len(part) >= 2:
-                            message_bytes = part[1] or b""
-                            break
-                    if not message_bytes:
-                        continue
-
-                    # 用 To 头过滤
-                    try:
-                        msg = email.message_from_bytes(message_bytes)
-                        to_addr = str(msg.get("To") or "").lower()
-                        if target_email and target_email not in to_addr:
-                            continue
-                    except Exception:
-                        pass
-
-                    raw_body = self._decode_message_raw(message_bytes)
-                    link = self._extract_continue_registration_link(raw_body)
-                    if link:
-                        self._log(f"[CFGmailCatchAll] 收到确认链接: {link[:160]}")
-                        return link
-            finally:
-                try:
-                    conn.logout()
-                except Exception:
-                    pass
-            return None
-
-        try:
-            return self._run_polling_wait(
-                timeout=timeout,
-                poll_interval=5,
-                poll_once=poll_once,
-                timeout_message=f"CFGmailCatchAll 等待确认链接超时 ({timeout}s)",
-            )
-        except Exception:
-            return None
-

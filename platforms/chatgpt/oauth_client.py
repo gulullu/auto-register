@@ -2958,78 +2958,6 @@ class OAuthClient:
         self._set_error(f"add_phone 阶段失败: {last_failure or '未完成手机号验证'}")
         return None
 
-    def _visit_confirmation_link(
-        self,
-        link_url,
-        device_id,
-        *,
-        user_agent=None,
-        sec_ch_ua=None,
-        impersonate=None,
-        referer=None,
-    ):
-        """访问 OpenAI continue-registration 确认链接，跟随重定向，返回下一步状态。"""
-        self._log(f"访问确认链接: {link_url[:160]}")
-        try:
-            headers = self._headers(
-                link_url,
-                user_agent=user_agent,
-                sec_ch_ua=sec_ch_ua,
-                accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                referer=referer or f"{self.oauth_issuer}/email-verification",
-                navigation=True,
-            )
-            kwargs = {
-                "headers": headers,
-                "allow_redirects": True,
-                "timeout": 30,
-            }
-            if impersonate:
-                kwargs["impersonate"] = impersonate
-
-            self._browser_pause()
-            r = self.session.get(link_url, **kwargs)
-            final_url = str(r.url)
-            self._log(f"确认链接访问完成: {r.status_code} -> {final_url[:160]}")
-
-            # 检查是否已经拿到 authorization code
-            code = self._extract_code_from_url(final_url)
-            if code:
-                self._log(f"确认链接直接拿到 authorization code: {code[:20]}...")
-                state = self._state_from_url(final_url)
-                state._auth_code = code
-                return state
-
-            # 解析返回的状态
-            content_type = (r.headers.get("content-type", "") or "").lower()
-            if "application/json" in content_type:
-                try:
-                    next_state = self._state_from_payload(
-                        r.json(), current_url=final_url
-                    )
-                except Exception:
-                    next_state = self._state_from_url(final_url)
-            else:
-                next_state = self._state_from_url(final_url)
-
-            # 如果还有重定向需要跟随
-            if self._state_requires_navigation(next_state):
-                self._log("确认链接后继续跟随重定向...")
-                auth_code, followed_state = self._follow_flow_state(
-                    next_state,
-                    referer=final_url,
-                    user_agent=user_agent,
-                    impersonate=impersonate,
-                )
-                if auth_code:
-                    followed_state._auth_code = auth_code
-                return followed_state
-
-            return next_state
-        except Exception as e:
-            self._log(f"访问确认链接异常: {e}")
-            return None
-
     def _handle_otp_verification(
         self,
         email,
@@ -3389,38 +3317,6 @@ class OAuthClient:
                 time.sleep(2)
                 if self.last_error:
                     break
-
-        # ---- OTP 验证码未通过，尝试 OpenAI 新版确认链接流程 ----
-        if not self.last_error and not _link_check_done:
-            _link_check_done = True
-            wait_for_link = getattr(skymail_client, "wait_for_confirmation_link", None)
-            if callable(wait_for_link):
-                self._log(
-                    "OTP 验证码未收到/未通过，尝试从邮件中提取 continue-registration 确认链接（120s）..."
-                )
-                try:
-                    link = wait_for_link(email, timeout=120)
-                except Exception as e:
-                    self._log(f"提取确认链接异常: {e}")
-                    link = None
-                if link:
-                    self._log(f"成功提取确认链接: {link[:160]}")
-                    link_state = self._visit_confirmation_link(
-                        link,
-                        device_id,
-                        user_agent=user_agent,
-                        sec_ch_ua=sec_ch_ua,
-                        impersonate=impersonate,
-                        referer=state.current_url
-                        or state.continue_url
-                        or f"{self.oauth_issuer}/email-verification",
-                    )
-                    if link_state:
-                        self._log(f"确认链接验证成功 {describe_flow_state(link_state)}")
-                        return link_state
-                    self._log("确认链接验证未返回有效状态")
-                else:
-                    self._log("未提取到确认链接")
 
         if not self.last_error:
             self._set_error(
