@@ -9,7 +9,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Any, Callable
 from .proxy_utils import build_requests_proxy_config
-from .cf_gmail_catchall import CFGmailCatchAllMailbox
 
 
 @dataclass
@@ -321,6 +320,7 @@ def create_mailbox(
             proxy=proxy,
         )
     elif provider == "cf_gmail_catchall":
+        from .cf_gmail_catchall import CFGmailCatchAllMailbox
         return CFGmailCatchAllMailbox(
             accounts=extra.get("cf_gmail_accounts")
             or extra.get("CF_GMAIL_ACCOUNTS")
