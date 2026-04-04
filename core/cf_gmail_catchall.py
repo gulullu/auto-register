@@ -278,17 +278,18 @@ class CFGmailCatchAllMailbox(BaseMailbox):
             import email as email_mod
             try:
                 msg = email_mod.message_from_bytes(message_bytes)
-                to_addr = str(msg.get("To") or "")[:80]
+                to_addr = str(msg.get("To") or "")
                 subj = str(msg.get("Subject") or "")[:60]
                 self._log(
-                    f"[CFGmailCatchAll] 新邮件 id={message_id} to={to_addr} subj={subj}"
+                    f"[CFGmailCatchAll] 新邮件 id={message_id} to={to_addr[:80]} subj={subj}"
                 )
+                # 用 To 头过滤非目标邮箱的邮件（正文不一定包含收件人地址）
+                if target_email and target_email not in to_addr.lower():
+                    return None
             except Exception:
                 pass
 
             body = self._decode_message(message_bytes)
-            if target_email and target_email not in body.lower():
-                return None
             if keyword_lc and keyword_lc not in body.lower():
                 return None
             pattern = code_pattern if code_pattern is not None else ""
