@@ -115,14 +115,14 @@ class CFGmailCatchAllMailbox(BaseMailbox):
         ]
         return f"{random.choice(adjectives)}{random.choice(nouns)}{random.randint(10, 999)}".lower()
 
-    def _connect_imap(self, account_cfg: _CatchAllAccount):
+    def _connect_imap(self, account_cfg: _CatchAllAccount, folder: str = "INBOX"):
         if self.proxy:
             self._log(
                 "[CFGmailCatchAll] 当前 provider 已收到 proxy，但 Gmail IMAP 直连不复用 requests 代理配置"
             )
         conn = imaplib.IMAP4_SSL("imap.gmail.com", 993)
         conn.login(account_cfg.gmail_user, account_cfg.gmail_app_pass)
-        conn.select("INBOX")
+        conn.select(folder)
         return conn
 
     def _decode_message(self, message_bytes: bytes) -> str:
@@ -248,41 +248,73 @@ class CFGmailCatchAllMailbox(BaseMailbox):
         }
         keyword_lc = str(keyword or "").strip().lower()
 
+        target_email = str(getattr(account, 'email', '') or '').lower()
+        _first_poll = [True]  # 用 list 以便在闭包中修改
+        _folders = ["INBOX", "[Gmail]/Spam", "[Gmail]/All Mail"]
+
         def poll_once() -> Optional[str]:
-            conn = self._connect_imap(account_cfg)
-            try:
-                for message_id in self._search_ids(conn):
-                    if not message_id or message_id in seen:
-                        continue
-                    seen.add(message_id)
-                    status, data = conn.fetch(message_id, "(RFC822)")
-                    if status != "OK" or not data:
-                        continue
-                    message_bytes = b""
-                    for part in data:
-                        if isinstance(part, tuple) and len(part) >= 2:
-                            message_bytes = part[1] or b""
-                            break
-                    if not message_bytes:
-                        continue
-                    body = self._decode_message(message_bytes)
-                    if keyword_lc and keyword_lc not in body.lower():
-                        continue
-                    pattern = code_pattern if code_pattern is not None else ""
-                    code = self._safe_extract(body, pattern)
-                    if code and code in exclude_codes:
-                        self._log(
-                            f"[CFGmailCatchAll] 跳过已使用验证码 message_id={message_id} code={code}"
-                        )
-                        continue
-                    if code:
-                        self._log(f"[CFGmailCatchAll] 收到验证码: {code}")
-                        return code
-            finally:
+            for folder in _folders:
                 try:
-                    conn.logout()
-                except Exception:
-                    pass
+                    conn = self._connect_imap(account_cfg, folder=folder)
+                except Exception as e:
+                    if _first_poll[0]:
+                        self._log(f"[CFGmailCatchAll] 无法打开文件夹 {folder}: {e}")
+                    continue
+                try:
+                    all_ids = self._search_ids(conn)
+                    new_ids = [mid for mid in all_ids if mid and mid not in seen]
+                    if _first_poll[0] or new_ids:
+                        self._log(
+                            f"[CFGmailCatchAll] OTP扫描 [{folder}] gmail={account_cfg.gmail_user}: "
+                            f"总邮件={len(all_ids)} 新邮件={len(new_ids)}"
+                        )
+                    for message_id in new_ids:
+                        seen.add(message_id)
+                        status, data = conn.fetch(message_id, "(RFC822)")
+                        if status != "OK" or not data:
+                            continue
+                        message_bytes = b""
+                        for part in data:
+                            if isinstance(part, tuple) and len(part) >= 2:
+                                message_bytes = part[1] or b""
+                                break
+                        if not message_bytes:
+                            continue
+
+                        # 调试：输出邮件基本信息
+                        import email as email_mod
+                        try:
+                            msg = email_mod.message_from_bytes(message_bytes)
+                            to_addr = str(msg.get("To") or "")[:80]
+                            subj = str(msg.get("Subject") or "")[:60]
+                            self._log(
+                                f"[CFGmailCatchAll] 新邮件 id={message_id} to={to_addr} subj={subj}"
+                            )
+                        except Exception:
+                            pass
+
+                        body = self._decode_message(message_bytes)
+                        # 过滤非目标邮箱的邮件
+                        if target_email and target_email not in body.lower():
+                            continue
+                        if keyword_lc and keyword_lc not in body.lower():
+                            continue
+                        pattern = code_pattern if code_pattern is not None else ""
+                        code = self._safe_extract(body, pattern)
+                        if code and code in exclude_codes:
+                            self._log(
+                                f"[CFGmailCatchAll] 跳过已使用验证码 message_id={message_id} code={code}"
+                            )
+                            continue
+                        if code:
+                            self._log(f"[CFGmailCatchAll] 收到验证码: {code} (folder={folder})")
+                            return code
+                finally:
+                    try:
+                        conn.logout()
+                    except Exception:
+                        pass
+            _first_poll[0] = False
             return None
 
         return self._run_polling_wait(
@@ -306,55 +338,59 @@ class CFGmailCatchAllMailbox(BaseMailbox):
         target_email = str(getattr(account, 'email', '') or '').lower()
 
         def poll_once() -> Optional[str]:
-            conn = self._connect_imap(account_cfg)
-            try:
-                all_ids = self._search_ids(conn)
-                new_ids = [mid for mid in all_ids if mid and mid not in seen]
-                if new_ids:
-                    self._log(f"[CFGmailCatchAll] 链接扫描: 总邮件={len(all_ids)} 新邮件={len(new_ids)}")
-                for message_id in new_ids:
-                    seen.add(message_id)
-                    status, data = conn.fetch(message_id, "(RFC822)")
-                    if status != "OK" or not data:
-                        continue
-                    message_bytes = b""
-                    for part in data:
-                        if isinstance(part, tuple) and len(part) >= 2:
-                            message_bytes = part[1] or b""
-                            break
-                    if not message_bytes:
-                        continue
+            for folder in ["INBOX", "[Gmail]/Spam", "[Gmail]/All Mail"]:
+                try:
+                    conn = self._connect_imap(account_cfg, folder=folder)
+                except Exception:
+                    continue
+                try:
+                    all_ids = self._search_ids(conn)
+                    new_ids = [mid for mid in all_ids if mid and mid not in seen]
+                    if new_ids:
+                        self._log(f"[CFGmailCatchAll] 链接扫描 [{folder}]: 总邮件={len(all_ids)} 新邮件={len(new_ids)}")
+                    for message_id in new_ids:
+                        seen.add(message_id)
+                        status, data = conn.fetch(message_id, "(RFC822)")
+                        if status != "OK" or not data:
+                            continue
+                        message_bytes = b""
+                        for part in data:
+                            if isinstance(part, tuple) and len(part) >= 2:
+                                message_bytes = part[1] or b""
+                                break
+                        if not message_bytes:
+                            continue
 
-                    # 解析邮件头信息用于调试
-                    import email as email_mod
+                        # 解析邮件头信息用于调试
+                        import email as email_mod
+                        try:
+                            msg = email_mod.message_from_bytes(message_bytes)
+                            subject = str(msg.get("Subject") or "")[:80]
+                            from_addr = str(msg.get("From") or "")[:80]
+                            to_addr = str(msg.get("To") or "")[:80]
+                            self._log(
+                                f"[CFGmailCatchAll] 新邮件 id={message_id} "
+                                f"from={from_addr} to={to_addr} subj={subject}"
+                            )
+                        except Exception:
+                            pass
+
+                        # 检查是否是发给目标邮箱的
+                        raw_body = self._decode_message_raw(message_bytes)
+                        if target_email and target_email not in raw_body.lower():
+                            continue
+
+                        link = self._extract_continue_registration_link(raw_body)
+                        if link:
+                            self._log(f"[CFGmailCatchAll] 收到确认链接 (folder={folder}): {link[:160]}")
+                            return link
+                        else:
+                            self._log(f"[CFGmailCatchAll] 邮件 id={message_id} 未提取到确认链接")
+                finally:
                     try:
-                        msg = email_mod.message_from_bytes(message_bytes)
-                        subject = str(msg.get("Subject") or "")[:80]
-                        from_addr = str(msg.get("From") or "")[:80]
-                        to_addr = str(msg.get("To") or "")[:80]
-                        self._log(
-                            f"[CFGmailCatchAll] 新邮件 id={message_id} "
-                            f"from={from_addr} to={to_addr} subj={subject}"
-                        )
+                        conn.logout()
                     except Exception:
                         pass
-
-                    # 检查是否是发给目标邮箱的
-                    raw_body = self._decode_message_raw(message_bytes)
-                    if target_email and target_email not in raw_body.lower():
-                        continue
-
-                    link = self._extract_continue_registration_link(raw_body)
-                    if link:
-                        self._log(f"[CFGmailCatchAll] 收到确认链接: {link[:160]}")
-                        return link
-                    else:
-                        self._log(f"[CFGmailCatchAll] 邮件 id={message_id} 未提取到确认链接")
-            finally:
-                try:
-                    conn.logout()
-                except Exception:
-                    pass
             return None
 
         try:
