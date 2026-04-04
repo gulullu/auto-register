@@ -116,11 +116,61 @@ class CFGmailCatchAllMailbox(BaseMailbox):
         return f"{random.choice(adjectives)}{random.choice(nouns)}{random.randint(10, 999)}".lower()
 
     def _connect_imap(self, account_cfg: _CatchAllAccount):
+        proxy_url = None
         if self.proxy:
-            self._log(
-                "[CFGmailCatchAll] 当前 provider 已收到 proxy，但 Gmail IMAP 直连不复用 requests 代理配置"
-            )
+            proxy_url = self.proxy.get("https") or self.proxy.get("http")
+
+        if proxy_url:
+            try:
+                conn = self._connect_imap_via_proxy(account_cfg, proxy_url)
+                return conn
+            except Exception as e:
+                self._log(f"[CFGmailCatchAll] 代理 IMAP 连接失败({e})，尝试直连...")
+
         conn = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        conn.login(account_cfg.gmail_user, account_cfg.gmail_app_pass)
+        conn.select("INBOX")
+        return conn
+
+    def _connect_imap_via_proxy(self, account_cfg: _CatchAllAccount, proxy_url: str):
+        """通过代理连接 Gmail IMAP（使用 PySocks）。"""
+        import socket
+        import ssl
+        import socks
+        from urllib.parse import urlsplit, unquote
+
+        parts = urlsplit(proxy_url)
+        proxy_host = parts.hostname
+        proxy_port = parts.port or 7777
+        proxy_user = unquote(parts.username) if parts.username else None
+        proxy_pass = unquote(parts.password or "") if parts.username else None
+
+        scheme = (parts.scheme or "").lower()
+        if "socks5" in scheme or "socks" in scheme:
+            proxy_type = socks.SOCKS5
+        elif "socks4" in scheme:
+            proxy_type = socks.SOCKS4
+        else:
+            proxy_type = socks.HTTP
+
+        # 临时替换 socket.create_connection，让 imaplib 走代理
+        _orig_create_conn = socket.create_connection
+
+        def _proxy_create_connection(address, timeout=None, *args, **kwargs):
+            sock = socks.socksocket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.set_proxy(proxy_type, proxy_host, proxy_port,
+                           username=proxy_user, password=proxy_pass)
+            if timeout:
+                sock.settimeout(timeout)
+            sock.connect(address)
+            return sock
+
+        try:
+            socket.create_connection = _proxy_create_connection
+            conn = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        finally:
+            socket.create_connection = _orig_create_conn
+
         conn.login(account_cfg.gmail_user, account_cfg.gmail_app_pass)
         conn.select("INBOX")
         return conn
