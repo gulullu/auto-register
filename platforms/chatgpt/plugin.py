@@ -137,7 +137,7 @@ class ChatGPTPlatform(BasePlatform):
                     return wait_for_link(
                         self._acct,
                         link_pattern="continue-registration",
-                        timeout=_resolve_mailbox_timeout(timeout),
+                        timeout=max(int(timeout or 60), 30),
                         before_ids=self._before_ids,
                     )
 

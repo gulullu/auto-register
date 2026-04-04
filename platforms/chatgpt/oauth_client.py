@@ -3031,7 +3031,7 @@ class OAuthClient:
             except Exception as e:
                 self._log(f"提取确认链接异常: {e}")
                 link = None
-            if link and "continue-registration" in link:
+            if link:
                 self._log(f"成功提取确认链接，访问确认链接以完成验证...")
                 link_state = self._visit_confirmation_link(
                     link,

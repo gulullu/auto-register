@@ -114,19 +114,52 @@ class BaseMailbox(ABC):
 
     @staticmethod
     def _extract_continue_registration_link(text: str) -> Optional[str]:
-        """从邮件原始内容(含 HTML)中提取 OpenAI continue-registration 确认链接。"""
+        """从邮件原始内容(含 HTML)中提取 OpenAI 确认链接。
+        支持直接链接和 SendGrid 追踪包装链接。"""
         import re
+        import html as html_mod
         if not text:
             return None
-        # 优先从 href 属性中提取（邮件 HTML 中按钮链接）
-        for m in re.finditer(r'href=["\']([^"\']*)["\']', text, re.IGNORECASE):
+
+        # 先做一次 HTML 实体解码（部分邮件 href 中 & 被编码为 &amp;）
+        decoded_text = html_mod.unescape(text)
+
+        # 收集所有 href 中的 URL
+        all_hrefs = []
+        for m in re.finditer(r'href\s*=\s*["\']([^"\']+)["\']', decoded_text, re.IGNORECASE):
             url = m.group(1).strip()
+            if url:
+                all_hrefs.append(url)
+
+        # 也从纯文本中提取 URL（兜底）
+        for m in re.finditer(r'(https?://[^\s<>"\']+)', decoded_text):
+            url = m.group(1).strip().rstrip('.')
+            if url and url not in all_hrefs:
+                all_hrefs.append(url)
+
+        # 排除明显无关的链接
+        skip_patterns = ('unsubscribe', 'help.openai.com', 'mailto:', '#')
+
+        # 第一优先级：直接包含 continue-registration
+        for url in all_hrefs:
             if 'continue-registration' in url:
                 return url
-        # 退而求其次，从纯文本中提取
-        m = re.search(r'(https?://[^\s<>"\'\']+continue-registration[^\s<>"\'\']*)', text)
-        if m:
-            return m.group(1).strip()
+
+        # 第二优先级：apps.openai.com 的链接（排除 unsubscribe 等）
+        for url in all_hrefs:
+            if 'apps.openai.com' in url and not any(s in url.lower() for s in skip_patterns):
+                return url
+
+        # 第三优先级：auth.openai.com 的链接（排除常见页面）
+        for url in all_hrefs:
+            if 'auth.openai.com' in url and not any(s in url.lower() for s in skip_patterns):
+                return url
+
+        # 第四优先级：SendGrid 追踪链接（邮件来自 OpenAI 时，主 CTA 通常是第一个追踪链接）
+        for url in all_hrefs:
+            if 'sendgrid.net' in url and not any(s in url.lower() for s in skip_patterns):
+                return url
+
         return None
 
     def wait_for_link(

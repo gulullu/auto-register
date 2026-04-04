@@ -303,13 +303,16 @@ class CFGmailCatchAllMailbox(BaseMailbox):
         """等待并从邮件中提取确认链接（保留原始 HTML 以读取 href）。"""
         account_cfg, _reason, _lease_left = self._select_account()
         seen = set(before_ids or [])
+        target_email = str(getattr(account, 'email', '') or '').lower()
 
         def poll_once() -> Optional[str]:
             conn = self._connect_imap(account_cfg)
             try:
-                for message_id in self._search_ids(conn):
-                    if not message_id or message_id in seen:
-                        continue
+                all_ids = self._search_ids(conn)
+                new_ids = [mid for mid in all_ids if mid and mid not in seen]
+                if new_ids:
+                    self._log(f"[CFGmailCatchAll] 链接扫描: 总邮件={len(all_ids)} 新邮件={len(new_ids)}")
+                for message_id in new_ids:
                     seen.add(message_id)
                     status, data = conn.fetch(message_id, "(RFC822)")
                     if status != "OK" or not data:
@@ -321,11 +324,32 @@ class CFGmailCatchAllMailbox(BaseMailbox):
                             break
                     if not message_bytes:
                         continue
+
+                    # 解析邮件头信息用于调试
+                    import email as email_mod
+                    try:
+                        msg = email_mod.message_from_bytes(message_bytes)
+                        subject = str(msg.get("Subject") or "")[:80]
+                        from_addr = str(msg.get("From") or "")[:80]
+                        to_addr = str(msg.get("To") or "")[:80]
+                        self._log(
+                            f"[CFGmailCatchAll] 新邮件 id={message_id} "
+                            f"from={from_addr} to={to_addr} subj={subject}"
+                        )
+                    except Exception:
+                        pass
+
+                    # 检查是否是发给目标邮箱的
                     raw_body = self._decode_message_raw(message_bytes)
+                    if target_email and target_email not in raw_body.lower():
+                        continue
+
                     link = self._extract_continue_registration_link(raw_body)
                     if link:
-                        self._log(f"[CFGmailCatchAll] 收到确认链接: {link[:120]}")
+                        self._log(f"[CFGmailCatchAll] 收到确认链接: {link[:160]}")
                         return link
+                    else:
+                        self._log(f"[CFGmailCatchAll] 邮件 id={message_id} 未提取到确认链接")
             finally:
                 try:
                     conn.logout()
