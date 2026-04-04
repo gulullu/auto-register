@@ -262,71 +262,93 @@ class CFGmailCatchAllMailbox(BaseMailbox):
         _poll_count = [0]
         _last_log_time = [0.0]
 
+        def _fetch_and_extract(conn, message_id):
+            """Fetch a single message and try to extract a verification code."""
+            status, data = conn.fetch(message_id, "(RFC822)")
+            if status != "OK" or not data:
+                return None
+            message_bytes = b""
+            for part in data:
+                if isinstance(part, tuple) and len(part) >= 2:
+                    message_bytes = part[1] or b""
+                    break
+            if not message_bytes:
+                return None
+
+            import email as email_mod
+            try:
+                msg = email_mod.message_from_bytes(message_bytes)
+                to_addr = str(msg.get("To") or "")[:80]
+                subj = str(msg.get("Subject") or "")[:60]
+                self._log(
+                    f"[CFGmailCatchAll] 新邮件 id={message_id} to={to_addr} subj={subj}"
+                )
+            except Exception:
+                pass
+
+            body = self._decode_message(message_bytes)
+            if target_email and target_email not in body.lower():
+                return None
+            if keyword_lc and keyword_lc not in body.lower():
+                return None
+            pattern = code_pattern if code_pattern is not None else ""
+            code = self._safe_extract(body, pattern)
+            if code and code in exclude_codes:
+                self._log(
+                    f"[CFGmailCatchAll] 跳过已使用验证码 id={message_id} code={code}"
+                )
+                return None
+            return code or None
+
         def poll_once() -> Optional[str]:
             _poll_count[0] += 1
             conn = self._connect_imap(account_cfg, folder="INBOX")
             try:
-                # 优先搜索 UNSEEN（未读）邮件 —— OTP 邮件一定是未读的
+                # ---- 策略1: 使用 Gmail 原生搜索引擎 (X-GM-RAW) ----
+                # 这跟 Gmail 网页搜索一样快，不受 IMAP 索引延迟影响
+                gmail_ids = []
+                if target_email:
+                    try:
+                        query = f"to:{target_email} newer_than:1h"
+                        conn.noop()
+                        status, data = conn.search(None, "X-GM-RAW", f'"{query}"')
+                        if status == "OK" and data and data[0]:
+                            for raw_id in data[0].split():
+                                try:
+                                    gmail_ids.append(raw_id.decode("utf-8", errors="ignore"))
+                                except Exception:
+                                    pass
+                    except Exception as e:
+                        if _poll_count[0] == 1:
+                            self._log(f"[CFGmailCatchAll] X-GM-RAW 搜索异常: {e}")
+
+                # ---- 策略2: 标准 IMAP UNSEEN 搜索 (兜底) ----
                 unseen_ids = self._search_ids(conn, criteria="UNSEEN")
-                new_unseen = [mid for mid in unseen_ids if mid and mid not in seen]
 
-                # 同时搜索 ALL 以确保不漏
+                # ---- 策略3: 标准 IMAP ALL 搜索 (兜底) ----
                 all_ids = self._search_ids(conn, criteria="ALL")
-                new_all = [mid for mid in all_ids if mid and mid not in seen]
 
-                # 合并去重
-                new_ids_set = set(new_unseen + new_all)
-                new_ids = sorted(new_ids_set, key=lambda x: int(x) if x.isdigit() else 0)
+                # 合并所有候选 ID，去重，排除已见
+                candidate_set = set()
+                for mid in gmail_ids + unseen_ids + all_ids:
+                    if mid and mid not in seen:
+                        candidate_set.add(mid)
+                new_ids = sorted(candidate_set, key=lambda x: int(x) if x.isdigit() else 0)
 
-                # 定期输出日志（首次 + 每 30 秒）
+                # 定期输出日志
                 now = time.time()
-                if _poll_count[0] == 1 or (now - _last_log_time[0]) >= 30:
+                if _poll_count[0] == 1 or new_ids or (now - _last_log_time[0]) >= 30:
                     _last_log_time[0] = now
                     self._log(
                         f"[CFGmailCatchAll] OTP扫描 #{_poll_count[0]} "
                         f"gmail={account_cfg.gmail_user} "
-                        f"ALL={len(all_ids)} UNSEEN={len(unseen_ids)} "
+                        f"GMAIL={len(gmail_ids)} UNSEEN={len(unseen_ids)} ALL={len(all_ids)} "
                         f"新邮件={len(new_ids)}"
                     )
 
                 for message_id in new_ids:
                     seen.add(message_id)
-                    status, data = conn.fetch(message_id, "(RFC822)")
-                    if status != "OK" or not data:
-                        continue
-                    message_bytes = b""
-                    for part in data:
-                        if isinstance(part, tuple) and len(part) >= 2:
-                            message_bytes = part[1] or b""
-                            break
-                    if not message_bytes:
-                        continue
-
-                    # 调试：输出邮件基本信息
-                    import email as email_mod
-                    try:
-                        msg = email_mod.message_from_bytes(message_bytes)
-                        to_addr = str(msg.get("To") or "")[:80]
-                        subj = str(msg.get("Subject") or "")[:60]
-                        self._log(
-                            f"[CFGmailCatchAll] 新邮件 id={message_id} to={to_addr} subj={subj}"
-                        )
-                    except Exception:
-                        pass
-
-                    body = self._decode_message(message_bytes)
-                    # 过滤非目标邮箱的邮件
-                    if target_email and target_email not in body.lower():
-                        continue
-                    if keyword_lc and keyword_lc not in body.lower():
-                        continue
-                    pattern = code_pattern if code_pattern is not None else ""
-                    code = self._safe_extract(body, pattern)
-                    if code and code in exclude_codes:
-                        self._log(
-                            f"[CFGmailCatchAll] 跳过已使用验证码 message_id={message_id} code={code}"
-                        )
-                        continue
+                    code = _fetch_and_extract(conn, message_id)
                     if code:
                         self._log(f"[CFGmailCatchAll] 收到验证码: {code}")
                         return code
