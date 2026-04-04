@@ -115,14 +115,19 @@ class CFGmailCatchAllMailbox(BaseMailbox):
         ]
         return f"{random.choice(adjectives)}{random.choice(nouns)}{random.randint(10, 999)}".lower()
 
+    _imap_proxy_warned = False
+
     def _connect_imap(self, account_cfg: _CatchAllAccount, folder: str = "INBOX"):
-        if self.proxy:
+        if self.proxy and not CFGmailCatchAllMailbox._imap_proxy_warned:
+            CFGmailCatchAllMailbox._imap_proxy_warned = True
             self._log(
                 "[CFGmailCatchAll] 当前 provider 已收到 proxy，但 Gmail IMAP 直连不复用 requests 代理配置"
             )
         conn = imaplib.IMAP4_SSL("imap.gmail.com", 993)
         conn.login(account_cfg.gmail_user, account_cfg.gmail_app_pass)
-        conn.select(folder)
+        # 文件夹名含空格/特殊字符需要加引号
+        quoted_folder = f'"{folder}"' if ' ' in folder or '[' in folder else folder
+        conn.select(quoted_folder)
         return conn
 
     def _decode_message(self, message_bytes: bytes) -> str:
@@ -191,8 +196,13 @@ class CFGmailCatchAllMailbox(BaseMailbox):
                     chunks.append(payload.decode("utf-8", errors="ignore"))
         return " ".join(chunks)
 
-    def _search_ids(self, conn) -> list[str]:
-        status, data = conn.search(None, "ALL")
+    def _search_ids(self, conn, criteria: str = "ALL") -> list[str]:
+        # 先 NOOP 强制服务器刷新邮箱状态（解决 Gmail IMAP 新邮件延迟问题）
+        try:
+            conn.noop()
+        except Exception:
+            pass
+        status, data = conn.search(None, criteria)
         if status != "OK":
             return []
         ids = []
@@ -249,72 +259,82 @@ class CFGmailCatchAllMailbox(BaseMailbox):
         keyword_lc = str(keyword or "").strip().lower()
 
         target_email = str(getattr(account, 'email', '') or '').lower()
-        _first_poll = [True]  # 用 list 以便在闭包中修改
-        _folders = ["INBOX", "[Gmail]/Spam", "[Gmail]/All Mail"]
+        _poll_count = [0]
+        _last_log_time = [0.0]
 
         def poll_once() -> Optional[str]:
-            for folder in _folders:
-                try:
-                    conn = self._connect_imap(account_cfg, folder=folder)
-                except Exception as e:
-                    if _first_poll[0]:
-                        self._log(f"[CFGmailCatchAll] 无法打开文件夹 {folder}: {e}")
-                    continue
-                try:
-                    all_ids = self._search_ids(conn)
-                    new_ids = [mid for mid in all_ids if mid and mid not in seen]
-                    if _first_poll[0] or new_ids:
-                        self._log(
-                            f"[CFGmailCatchAll] OTP扫描 [{folder}] gmail={account_cfg.gmail_user}: "
-                            f"总邮件={len(all_ids)} 新邮件={len(new_ids)}"
-                        )
-                    for message_id in new_ids:
-                        seen.add(message_id)
-                        status, data = conn.fetch(message_id, "(RFC822)")
-                        if status != "OK" or not data:
-                            continue
-                        message_bytes = b""
-                        for part in data:
-                            if isinstance(part, tuple) and len(part) >= 2:
-                                message_bytes = part[1] or b""
-                                break
-                        if not message_bytes:
-                            continue
+            _poll_count[0] += 1
+            conn = self._connect_imap(account_cfg, folder="INBOX")
+            try:
+                # 优先搜索 UNSEEN（未读）邮件 —— OTP 邮件一定是未读的
+                unseen_ids = self._search_ids(conn, criteria="UNSEEN")
+                new_unseen = [mid for mid in unseen_ids if mid and mid not in seen]
 
-                        # 调试：输出邮件基本信息
-                        import email as email_mod
-                        try:
-                            msg = email_mod.message_from_bytes(message_bytes)
-                            to_addr = str(msg.get("To") or "")[:80]
-                            subj = str(msg.get("Subject") or "")[:60]
-                            self._log(
-                                f"[CFGmailCatchAll] 新邮件 id={message_id} to={to_addr} subj={subj}"
-                            )
-                        except Exception:
-                            pass
+                # 同时搜索 ALL 以确保不漏
+                all_ids = self._search_ids(conn, criteria="ALL")
+                new_all = [mid for mid in all_ids if mid and mid not in seen]
 
-                        body = self._decode_message(message_bytes)
-                        # 过滤非目标邮箱的邮件
-                        if target_email and target_email not in body.lower():
-                            continue
-                        if keyword_lc and keyword_lc not in body.lower():
-                            continue
-                        pattern = code_pattern if code_pattern is not None else ""
-                        code = self._safe_extract(body, pattern)
-                        if code and code in exclude_codes:
-                            self._log(
-                                f"[CFGmailCatchAll] 跳过已使用验证码 message_id={message_id} code={code}"
-                            )
-                            continue
-                        if code:
-                            self._log(f"[CFGmailCatchAll] 收到验证码: {code} (folder={folder})")
-                            return code
-                finally:
+                # 合并去重
+                new_ids_set = set(new_unseen + new_all)
+                new_ids = sorted(new_ids_set, key=lambda x: int(x) if x.isdigit() else 0)
+
+                # 定期输出日志（首次 + 每 30 秒）
+                now = time.time()
+                if _poll_count[0] == 1 or (now - _last_log_time[0]) >= 30:
+                    _last_log_time[0] = now
+                    self._log(
+                        f"[CFGmailCatchAll] OTP扫描 #{_poll_count[0]} "
+                        f"gmail={account_cfg.gmail_user} "
+                        f"ALL={len(all_ids)} UNSEEN={len(unseen_ids)} "
+                        f"新邮件={len(new_ids)}"
+                    )
+
+                for message_id in new_ids:
+                    seen.add(message_id)
+                    status, data = conn.fetch(message_id, "(RFC822)")
+                    if status != "OK" or not data:
+                        continue
+                    message_bytes = b""
+                    for part in data:
+                        if isinstance(part, tuple) and len(part) >= 2:
+                            message_bytes = part[1] or b""
+                            break
+                    if not message_bytes:
+                        continue
+
+                    # 调试：输出邮件基本信息
+                    import email as email_mod
                     try:
-                        conn.logout()
+                        msg = email_mod.message_from_bytes(message_bytes)
+                        to_addr = str(msg.get("To") or "")[:80]
+                        subj = str(msg.get("Subject") or "")[:60]
+                        self._log(
+                            f"[CFGmailCatchAll] 新邮件 id={message_id} to={to_addr} subj={subj}"
+                        )
                     except Exception:
                         pass
-            _first_poll[0] = False
+
+                    body = self._decode_message(message_bytes)
+                    # 过滤非目标邮箱的邮件
+                    if target_email and target_email not in body.lower():
+                        continue
+                    if keyword_lc and keyword_lc not in body.lower():
+                        continue
+                    pattern = code_pattern if code_pattern is not None else ""
+                    code = self._safe_extract(body, pattern)
+                    if code and code in exclude_codes:
+                        self._log(
+                            f"[CFGmailCatchAll] 跳过已使用验证码 message_id={message_id} code={code}"
+                        )
+                        continue
+                    if code:
+                        self._log(f"[CFGmailCatchAll] 收到验证码: {code}")
+                        return code
+            finally:
+                try:
+                    conn.logout()
+                except Exception:
+                    pass
             return None
 
         return self._run_polling_wait(
