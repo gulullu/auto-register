@@ -54,9 +54,13 @@ class RegistrationResult:
             "account_id": self.account_id,
             "workspace_id": self.workspace_id,
             "access_token": self.access_token[:20] + "..." if self.access_token else "",
-            "refresh_token": self.refresh_token[:20] + "..." if self.refresh_token else "",
+            "refresh_token": self.refresh_token[:20] + "..."
+            if self.refresh_token
+            else "",
             "id_token": self.id_token[:20] + "..." if self.id_token else "",
-            "session_token": self.session_token[:20] + "..." if self.session_token else "",
+            "session_token": self.session_token[:20] + "..."
+            if self.session_token
+            else "",
             "error_message": self.error_message,
             "logs": self.logs or [],
             "metadata": self.metadata or {},
@@ -163,7 +167,9 @@ class RefreshTokenRegistrationEngine:
         self.proxy_url = proxy_url
         self.callback_logger = callback_logger or (lambda msg: logger.info(msg))
         self.task_uuid = task_uuid
-        self.browser_mode = str(browser_mode or "protocol").strip().lower() or "protocol"
+        self.browser_mode = (
+            str(browser_mode or "protocol").strip().lower() or "protocol"
+        )
         # 已移除整流程重试能力，保留参数仅兼容调用方
         self.max_retries = 1
         self.extra_config = dict(extra_config or {})
@@ -194,9 +200,7 @@ class RefreshTokenRegistrationEngine:
             self.email_info = self.email_service.create_email()
 
             email_value = str(
-                self.email
-                or (self.email_info or {}).get("email")
-                or ""
+                self.email or (self.email_info or {}).get("email") or ""
             ).strip()
             if not email_value:
                 self._log(
@@ -278,7 +282,9 @@ class RefreshTokenRegistrationEngine:
             user_agent=getattr(register_client, "ua", None),
             sec_ch_ua=getattr(register_client, "sec_ch_ua", None),
             accept_language=(
-                getattr(register_client.session, "headers", {}).get("Accept-Language", "")
+                getattr(register_client.session, "headers", {}).get(
+                    "Accept-Language", ""
+                )
                 if getattr(register_client, "session", None) is not None
                 else ""
             ),
@@ -342,9 +348,7 @@ class RefreshTokenRegistrationEngine:
         result.refresh_token = str(tokens.get("refresh_token") or "").strip()
         result.id_token = str(tokens.get("id_token") or "").strip()
         result.account_id = str(
-            tokens.get("account_id")
-            or account_info.get("account_id")
-            or ""
+            tokens.get("account_id") or account_info.get("account_id") or ""
         ).strip()
         result.workspace_id = workspace_id
         result.session_token = session_token
@@ -378,7 +382,10 @@ class RefreshTokenRegistrationEngine:
         )
         register_otp_resend_wait_seconds = self._read_int_config(
             "chatgpt_register_otp_resend_wait_seconds",
-            fallback_keys=("chatgpt_register_otp_wait_seconds", "chatgpt_otp_wait_seconds"),
+            fallback_keys=(
+                "chatgpt_register_otp_wait_seconds",
+                "chatgpt_otp_wait_seconds",
+            ),
             default=300,
             minimum=30,
             maximum=3600,
@@ -412,7 +419,9 @@ class RefreshTokenRegistrationEngine:
             self._log(f"邮箱: {result.email}")
             self._log(f"密码: {self.password}")
             self._log(f"注册信息: {first_name} {last_name}, 生日: {birthdate}")
-            self._log("流程策略: 注册阶段推进到 about_you 后切换到 OAuth 流程继续完成后续步骤")
+            self._log(
+                "流程策略: 注册阶段推进到 about_you 后切换到 OAuth 流程继续完成后续步骤"
+            )
             self._log(
                 "验证码等待策略: "
                 f"register_wait={register_otp_wait_seconds}s, "
@@ -427,7 +436,10 @@ class RefreshTokenRegistrationEngine:
             )
 
             register_client = self._build_chatgpt_client()
-            self._log("2. 执行注册状态机（interrupt 模式：不在注册阶段提交 about_you）...")
+            register_client.log_proxy_exit_ip()
+            self._log(
+                "2. 执行注册状态机（interrupt 模式：不在注册阶段提交 about_you）..."
+            )
             registered, registration_message = register_client.register_complete_flow(
                 result.email,
                 self.password,
@@ -456,7 +468,9 @@ class RefreshTokenRegistrationEngine:
                 source = "login"
             else:
                 if registration_message == "pending_about_you_submission":
-                    self._log("注册状态机已推进至 about_you，符合预期。下一步进入 OAuth 会话补全资料")
+                    self._log(
+                        "注册状态机已推进至 about_you，符合预期。下一步进入 OAuth 会话补全资料"
+                    )
                 else:
                     self._log(
                         "注册状态机返回成功但未停在 about_you。"
@@ -503,8 +517,12 @@ class RefreshTokenRegistrationEngine:
                     login_source="post_register_workspace_continue",
                 )
             else:
-                self._log("3. 新开 OAuth session，按 screen_hint=login + passwordless OTP 登录...")
-                self._log("4. 若命中 about_you，则在 OAuth 会话内提交姓名+生日，再继续 workspace/token")
+                self._log(
+                    "3. 新开 OAuth session，按 screen_hint=login + passwordless OTP 登录..."
+                )
+                self._log(
+                    "4. 若命中 about_you，则在 OAuth 会话内提交姓名+生日，再继续 workspace/token"
+                )
                 tokens = oauth_client.login_and_get_tokens(
                     result.email,
                     self.password,
@@ -524,7 +542,9 @@ class RefreshTokenRegistrationEngine:
                     last_name=last_name,
                     birthdate=birthdate,
                     login_source=(
-                        "existing_account_continue" if source == "login" else "post_register_workspace_continue"
+                        "existing_account_continue"
+                        if source == "login"
+                        else "post_register_workspace_continue"
                     ),
                 )
 

@@ -31,6 +31,7 @@ const SELECT_FIELDS: Record<string, { label: string; value: string }[]> = {
     { label: 'GPTMail', value: 'gptmail' },
     { label: 'OpenTrashMail', value: 'opentrashmail' },
     { label: 'Freemail（自建 CF Worker）', value: 'freemail' },
+    { label: 'CF Catch-all + Gmail', value: 'cf_gmail_catchall' },
     { label: 'CF Worker（自建域名）', value: 'cfworker' },
   ],
   maliapi_auto_domain_strategy: [
@@ -198,6 +199,14 @@ const TAB_ITEMS = [
           { key: 'cfworker_random_subdomain', label: '随机子域名', type: 'boolean' },
           { key: 'cfworker_random_name_subdomain', label: '随机姓名子域名', type: 'boolean' },
           { key: 'cfworker_fingerprint', label: 'Fingerprint', placeholder: '6703363b...' },
+        ],
+      },
+      {
+        title: 'CF Catch-all + Gmail',
+        desc: 'Cloudflare Email Routing catch-all + Gmail IMAP 取码；参数格式兼容 CF_GMAIL_ACCOUNTS',
+        fields: [
+          { key: 'cf_gmail_accounts', label: 'CF_GMAIL_ACCOUNTS', placeholder: '[{"cf_domain":"gain-mode.org","gmail_user":"demo@gmail.com","gmail_app_pass":"xxxx xxxx xxxx xxxx"}]' },
+          { key: 'cf_gmail_lease_seconds', label: '域名租约秒数', placeholder: '1800' },
         ],
       },
       {

@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Any, Callable
 from .proxy_utils import build_requests_proxy_config
+from .cf_gmail_catchall import CFGmailCatchAllMailbox
 
 
 @dataclass
@@ -143,6 +144,7 @@ class BaseMailbox(ABC):
     def get_current_ids(self, account: MailboxAccount) -> set:
         """返回当前邮件 ID 集合（用于过滤旧邮件）"""
         ...
+
     def _yyds_safe_extract(self, text: str, pattern: str = None) -> Optional[str]:
         """通用验证码提取逻辑：若有捕获组则返回 group(1)，否则返回 group(0)"""
         import re
@@ -186,15 +188,17 @@ class BaseMailbox(ABC):
         text = str(raw or "")
         if not text:
             return ""
-            
+
         # [修复点 4]：只有在明确包含常见邮件 Header 时，才进行 \r\n\r\n 切分。
         # 否则会误删 MaliAPI 等直接返回的已解析 JSON 正文内容（遇到普通的正文换行就错误截断了）
-        if re.search(r"(?im)^(?:Return-Path|Received|Date|From|To|Subject|Content-Type):", text):
+        if re.search(
+            r"(?im)^(?:Return-Path|Received|Date|From|To|Subject|Content-Type):", text
+        ):
             if "\r\n\r\n" in text:
                 text = text.split("\r\n\r\n", 1)[1]
             elif "\n\n" in text:
                 text = text.split("\n\n", 1)[1]
-                
+
         try:
             # 处理 Quoted-Printable
             decoded_bytes = quopri.decodestring(text)
@@ -209,6 +213,7 @@ class BaseMailbox(ABC):
         text = re.sub(r"<[^>]+>", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
         return text
+
 
 def create_mailbox(
     provider: str, extra: dict = None, proxy: str = None
@@ -231,9 +236,7 @@ def create_mailbox(
         except (TypeError, ValueError):
             timeout_value = 30
         return CloudMailMailbox(
-            api_base=extra.get("cloudmail_api_base")
-            or extra.get("base_url")
-            or "",
+            api_base=extra.get("cloudmail_api_base") or extra.get("base_url") or "",
             admin_email=extra.get("cloudmail_admin_email")
             or extra.get("admin_email")
             or "",
@@ -242,9 +245,7 @@ def create_mailbox(
             or extra.get("api_key")
             or "",
             domain=extra.get("cloudmail_domain") or extra.get("domain") or "",
-            subdomain=extra.get("cloudmail_subdomain")
-            or extra.get("subdomain")
-            or "",
+            subdomain=extra.get("cloudmail_subdomain") or extra.get("subdomain") or "",
             timeout=timeout_value,
             proxy=proxy,
         )
@@ -317,6 +318,14 @@ def create_mailbox(
             random_name_subdomain=extra.get("cfworker_random_name_subdomain", False),
             fingerprint=extra.get("cfworker_fingerprint", ""),
             custom_auth=extra.get("cfworker_custom_auth", ""),
+            proxy=proxy,
+        )
+    elif provider == "cf_gmail_catchall":
+        return CFGmailCatchAllMailbox(
+            accounts=extra.get("cf_gmail_accounts")
+            or extra.get("CF_GMAIL_ACCOUNTS")
+            or "",
+            lease_seconds=extra.get("cf_gmail_lease_seconds", 1800),
             proxy=proxy,
         )
     elif provider == "luckmail":
@@ -443,7 +452,16 @@ class AppleMailMailbox(BaseMailbox):
         if isinstance(payload, list):
             return [item for item in payload if isinstance(item, dict)]
         if isinstance(payload, dict):
-            for key in ("data", "result", "results", "messages", "mails", "emails", "items", "list"):
+            for key in (
+                "data",
+                "result",
+                "results",
+                "messages",
+                "mails",
+                "emails",
+                "items",
+                "list",
+            ):
                 if key in payload:
                     nested = AppleMailMailbox._unwrap_message_payload(payload.get(key))
                     if nested:
@@ -534,7 +552,9 @@ class AppleMailMailbox(BaseMailbox):
 
         result = []
         seen = set()
-        for mailbox in ([account_mailbox] if account_mailbox else []) + list(self.mailboxes):
+        for mailbox in ([account_mailbox] if account_mailbox else []) + list(
+            self.mailboxes
+        ):
             name = str(mailbox or "").strip()
             if not name or name in seen:
                 continue
@@ -542,7 +562,9 @@ class AppleMailMailbox(BaseMailbox):
             result.append(name)
         return result or ["INBOX"]
 
-    def _build_request_payload(self, account: MailboxAccount, mailbox: str) -> dict[str, Any]:
+    def _build_request_payload(
+        self, account: MailboxAccount, mailbox: str
+    ) -> dict[str, Any]:
         extra = account.extra or {}
         refresh_token = str(extra.get("refresh_token") or "").strip()
         client_id = str(extra.get("client_id") or "").strip()
@@ -556,7 +578,9 @@ class AppleMailMailbox(BaseMailbox):
             "mailbox": mailbox,
         }
 
-    def _list_messages(self, account: MailboxAccount, mailbox: str) -> list[dict[str, Any]]:
+    def _list_messages(
+        self, account: MailboxAccount, mailbox: str
+    ) -> list[dict[str, Any]]:
         data = self._request_json(
             "GET",
             "/api/mail-all",
@@ -603,8 +627,7 @@ class AppleMailMailbox(BaseMailbox):
             except Exception:
                 continue
             ids.update(
-                self._resolve_message_id(message, mailbox)
-                for message in messages
+                self._resolve_message_id(message, mailbox) for message in messages
             )
         return ids
 
@@ -1783,7 +1806,9 @@ class MaliAPIMailbox(BaseMailbox):
                             str(message.get("snippet") or ""),
                         ]
                     ).strip()
-                    search_text = self._yyds_decode_raw_content(search_text) or search_text
+                    search_text = (
+                        self._yyds_decode_raw_content(search_text) or search_text
+                    )
                     search_text = re.sub(
                         r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
                         "",
@@ -1874,7 +1899,9 @@ class GPTMailMailbox(BaseMailbox):
 
         if response.status_code >= 400:
             error = payload.get("error") if isinstance(payload, dict) else ""
-            message = str(error or response.text or f"HTTP {response.status_code}").strip()
+            message = str(
+                error or response.text or f"HTTP {response.status_code}"
+            ).strip()
             raise RuntimeError(f"GPTMail API {path} 失败: {message}")
 
         if isinstance(payload, dict) and payload.get("success") is False:
@@ -1886,7 +1913,9 @@ class GPTMailMailbox(BaseMailbox):
         return payload
 
     def _list_messages(self, email: str) -> list[dict]:
-        data = self._request_json("GET", "/api/emails", params={"email": email}, timeout=10)
+        data = self._request_json(
+            "GET", "/api/emails", params={"email": email}, timeout=10
+        )
         if isinstance(data, dict):
             messages = data.get("emails", [])
         else:
@@ -1905,7 +1934,11 @@ class GPTMailMailbox(BaseMailbox):
             return MailboxAccount(
                 email=email,
                 account_id=email,
-                extra={"provider": "gptmail", "domain": self.domain, "local_address": True},
+                extra={
+                    "provider": "gptmail",
+                    "domain": self.domain,
+                    "local_address": True,
+                },
             )
 
         data = self._request_json("GET", "/api/generate-email")
@@ -2978,7 +3011,10 @@ class LuckMailMailbox(BaseMailbox):
                         raise TimeoutError(f"LuckMail 等待验证码失败: {e}") from e
 
                     last_status = str(code_result.status or "pending")
-                    if code_result.status == "success" and code_result.verification_code:
+                    if (
+                        code_result.status == "success"
+                        and code_result.verification_code
+                    ):
                         code = code_result.verification_code
                         self._log(f"[LuckMail] 收到验证码: {code}")
                         return code
@@ -3091,9 +3127,7 @@ class OutlookMailbox(BaseMailbox):
                     ]
                 )
             except Exception:
-                self._imap_servers.extend(
-                    ["outlook.live.com", "outlook.office365.com"]
-                )
+                self._imap_servers.extend(["outlook.live.com", "outlook.office365.com"])
         self._imap_servers = [
             host for host in self._imap_servers if isinstance(host, str) and host
         ]
@@ -3109,14 +3143,11 @@ class OutlookMailbox(BaseMailbox):
 
         with self._lock:
             with Session(engine) as session:
-                account = (
-                    session.exec(
-                        select(OutlookAccountModel)
-                        .where(OutlookAccountModel.enabled == True)
-                        .order_by(OutlookAccountModel.id)
-                    )
-                    .first()
-                )
+                account = session.exec(
+                    select(OutlookAccountModel)
+                    .where(OutlookAccountModel.enabled == True)
+                    .order_by(OutlookAccountModel.id)
+                ).first()
                 if not account:
                     raise RuntimeError("Outlook 账号池为空，请先在设置页批量导入")
 
@@ -3166,7 +3197,9 @@ class OutlookMailbox(BaseMailbox):
                 "https://login.microsoftonline.com/common/oauth2/v2.0/token",
             ]
 
-    def _fetch_oauth_token(self, *, email: str, client_id: str, refresh_token: str) -> str:
+    def _fetch_oauth_token(
+        self, *, email: str, client_id: str, refresh_token: str
+    ) -> str:
         if not client_id or not refresh_token:
             return ""
         import requests
@@ -3487,17 +3520,17 @@ class FreemailMailbox(BaseMailbox):
             r = self._session.get(f"{self.api}/api/domains", timeout=15)
             payload = r.json()
             normalized = []
+
             def _append_domain(value):
                 domain = str(value or "").strip().lstrip("@")
                 if domain and domain not in normalized:
                     normalized.append(domain)
+
             if isinstance(payload, list):
                 for item in payload:
                     if isinstance(item, dict):
                         _append_domain(
-                            item.get("domain")
-                            or item.get("name")
-                            or item.get("value")
+                            item.get("domain") or item.get("name") or item.get("value")
                         )
                     else:
                         _append_domain(item)

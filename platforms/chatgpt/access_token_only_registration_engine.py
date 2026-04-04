@@ -16,15 +16,19 @@ from .utils import generate_random_name, generate_random_birthday
 
 logger = logging.getLogger(__name__)
 
+
 class EmailServiceAdapter:
     """\u5c06 V1 \u7684 email_service \u9002\u914d\u6210 V2 \u6240\u9700\u7684\u63a5\u7801\u63a5\u53e3\u3002"""
+
     def __init__(self, email_service, email, log_fn):
         self.es = email_service
         self.email = email
         self.log_fn = log_fn
         self._used_codes = set()
 
-    def wait_for_verification_code(self, email, timeout=60, otp_sent_at=None, exclude_codes=None):
+    def wait_for_verification_code(
+        self, email, timeout=60, otp_sent_at=None, exclude_codes=None
+    ):
         msg = f"\u6b63\u5728\u7b49\u5f85\u90ae\u7bb1 {email} \u7684\u9a8c\u8bc1\u7801 ({timeout}s)..."
         self.log_fn(msg)
         code = self.es.get_verification_code(
@@ -36,6 +40,7 @@ class EmailServiceAdapter:
             self._used_codes.add(code)
             self.log_fn(f"\u6210\u529f\u83b7\u53d6\u9a8c\u8bc1\u7801: {code}")
         return code
+
 
 class AccessTokenOnlyRegistrationEngine:
     def __init__(
@@ -55,11 +60,11 @@ class AccessTokenOnlyRegistrationEngine:
         self.task_uuid = task_uuid
         self.max_retries = max(1, int(max_retries or 1))
         self.extra_config = dict(extra_config or {})
-        
+
         self.email = None
         self.password = None
         self.logs = []
-        
+
     def _log(self, message: str, level: str = "info"):
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_message = f"[{timestamp}] {message}"
@@ -111,7 +116,9 @@ class AccessTokenOnlyRegistrationEngine:
 
                     # 1. 创建邮箱
                     email_data = self.email_service.create_email()
-                    email_addr = self.email or (email_data.get('email') if email_data else None)
+                    email_addr = self.email or (
+                        email_data.get("email") if email_data else None
+                    )
                     if not email_addr:
                         result.error_message = "创建邮箱失败"
                         return result
@@ -129,7 +136,9 @@ class AccessTokenOnlyRegistrationEngine:
                     self._log(f"注册信息: {first_name} {last_name}, 生日: {birthdate}")
 
                     # 使用包装器为底层客户端提供接码服务
-                    skymail_adapter = EmailServiceAdapter(self.email_service, email_addr, self._log)
+                    skymail_adapter = EmailServiceAdapter(
+                        self.email_service, email_addr, self._log
+                    )
 
                     # 2. 初始化 V2 客户端
                     chatgpt_client = ChatGPTClient(
@@ -138,11 +147,17 @@ class AccessTokenOnlyRegistrationEngine:
                         browser_mode=self.browser_mode,
                     )
                     chatgpt_client._log = self._log
+                    chatgpt_client.log_proxy_exit_ip()
 
                     self._log("步骤 1/2: 执行注册状态机...")
 
                     success, msg = chatgpt_client.register_complete_flow(
-                        email_addr, pwd, first_name, last_name, birthdate, skymail_adapter
+                        email_addr,
+                        pwd,
+                        first_name,
+                        last_name,
+                        birthdate,
+                        skymail_adapter,
                     )
 
                     if not success:
@@ -153,8 +168,12 @@ class AccessTokenOnlyRegistrationEngine:
                         result.error_message = last_error
                         return result
 
-                    self._log("步骤 2/2: 复用注册会话，直接获取 ChatGPT Session / AccessToken...")
-                    session_ok, session_result = chatgpt_client.reuse_session_and_get_tokens()
+                    self._log(
+                        "步骤 2/2: 复用注册会话，直接获取 ChatGPT Session / AccessToken..."
+                    )
+                    session_ok, session_result = (
+                        chatgpt_client.reuse_session_and_get_tokens()
+                    )
 
                     if session_ok:
                         self._log("Token 提取完成！")
@@ -183,7 +202,9 @@ class AccessTokenOnlyRegistrationEngine:
                         self._log("=" * 60)
                         return result
 
-                    last_error = f"注册成功，但复用会话获取 AccessToken 失败: {session_result}"
+                    last_error = (
+                        f"注册成功，但复用会话获取 AccessToken 失败: {session_result}"
+                    )
                     if attempt < self.max_retries - 1:
                         self._log(f"{last_error}，准备整流程重试")
                         continue
@@ -193,19 +214,22 @@ class AccessTokenOnlyRegistrationEngine:
                     raise
                 except Exception as attempt_error:
                     last_error = str(attempt_error)
-                    if attempt < self.max_retries - 1 and self._should_retry(last_error):
+                    if attempt < self.max_retries - 1 and self._should_retry(
+                        last_error
+                    ):
                         self._log(f"本轮出现异常，准备整流程重试: {last_error}")
                         continue
                     raise
 
             result.error_message = last_error or "注册失败"
             return result
-                
+
         except TaskInterruption:
             raise
         except Exception as e:
             self._log(f"无 RT 注册全流程执行异常: {e}", "error")
             import traceback
+
             traceback.print_exc()
             result.error_message = str(e)
             return result

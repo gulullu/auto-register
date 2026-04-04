@@ -79,6 +79,8 @@ export default function RegisterTaskPage() {
         freemail_username: cfg.freemail_username || '',
         freemail_password: cfg.freemail_password || '',
         freemail_domain: cfg.freemail_domain || '',
+        cf_gmail_accounts: cfg.cf_gmail_accounts || '',
+        cf_gmail_lease_seconds: cfg.cf_gmail_lease_seconds || 1800,
         cfworker_api_url: cfg.cfworker_api_url || '',
         cfworker_admin_token: cfg.cfworker_admin_token || '',
         cfworker_custom_auth: cfg.cfworker_custom_auth || '',
@@ -141,6 +143,8 @@ export default function RegisterTaskPage() {
       freemail_username: values.freemail_username,
       freemail_password: values.freemail_password,
       freemail_domain: values.freemail_domain,
+      cf_gmail_accounts: values.cf_gmail_accounts,
+      cf_gmail_lease_seconds: values.cf_gmail_lease_seconds,
       cfworker_api_url: values.cfworker_api_url,
       cfworker_admin_token: values.cfworker_admin_token,
       cfworker_custom_auth: values.cfworker_custom_auth,
@@ -310,6 +314,7 @@ export default function RegisterTaskPage() {
                 { value: 'duckmail', label: 'DuckMail' },
                 { value: 'freemail', label: 'Freemail' },
                 { value: 'laoudo', label: 'Laoudo' },
+                { value: 'cf_gmail_catchall', label: 'CF Catch-all + Gmail' },
                 { value: 'cfworker', label: 'CF Worker' },
               ]}
             />
@@ -479,6 +484,24 @@ export default function RegisterTaskPage() {
               </Form.Item>
               <Form.Item name="cfworker_fingerprint" label="Fingerprint (可选)">
                 <Input placeholder="cfb82279f..." />
+              </Form.Item>
+            </>
+          )}
+          {mailProvider === 'cf_gmail_catchall' && (
+            <>
+              <Form.Item
+                name="cf_gmail_accounts"
+                label="CF_GMAIL_ACCOUNTS"
+                extra="JSON 数组；每项包含 cf_domain、gmail_user、gmail_app_pass"
+                rules={[{ required: true, message: '请输入 CF_GMAIL_ACCOUNTS JSON' }]}
+              >
+                <Input.TextArea
+                  rows={8}
+                  placeholder={'[{"cf_domain":"gain-mode.org","gmail_user":"demo@gmail.com","gmail_app_pass":"xxxx xxxx xxxx xxxx"}]'}
+                />
+              </Form.Item>
+              <Form.Item name="cf_gmail_lease_seconds" label="域名租约秒数">
+                <Input type="number" min={1} placeholder="1800" />
               </Form.Item>
             </>
           )}

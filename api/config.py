@@ -59,6 +59,8 @@ CONFIG_KEYS = [
     "cfworker_random_subdomain",
     "cfworker_random_name_subdomain",
     "cfworker_fingerprint",
+    "cf_gmail_accounts",
+    "cf_gmail_lease_seconds",
     "smstome_cookie",
     "smstome_country_slugs",
     "smstome_phone_attempts",
@@ -142,9 +144,15 @@ def update_config(body: ConfigUpdate):
 
 @router.post("/applemail/import")
 def import_applemail_pool(body: AppleMailImportRequest):
-    from core.applemail_pool import load_applemail_pool_snapshot, save_applemail_pool_json
+    from core.applemail_pool import (
+        load_applemail_pool_snapshot,
+        save_applemail_pool_json,
+    )
 
-    pool_dir = str(body.pool_dir or config_store.get("applemail_pool_dir", "mail")).strip() or "mail"
+    pool_dir = (
+        str(body.pool_dir or config_store.get("applemail_pool_dir", "mail")).strip()
+        or "mail"
+    )
     result = save_applemail_pool_json(
         body.content,
         pool_dir=pool_dir,
@@ -180,8 +188,13 @@ def get_applemail_pool_snapshot(
 ):
     from core.applemail_pool import load_applemail_pool_snapshot
 
-    resolved_pool_dir = str(pool_dir or config_store.get("applemail_pool_dir", "mail")).strip() or "mail"
-    resolved_pool_file = str(pool_file or config_store.get("applemail_pool_file", "")).strip()
+    resolved_pool_dir = (
+        str(pool_dir or config_store.get("applemail_pool_dir", "mail")).strip()
+        or "mail"
+    )
+    resolved_pool_file = str(
+        pool_file or config_store.get("applemail_pool_file", "")
+    ).strip()
     try:
         snapshot = load_applemail_pool_snapshot(
             pool_file=resolved_pool_file,

@@ -164,6 +164,66 @@ class ChatGPTClient:
         if self.verbose:
             print(f"  {msg}")
 
+    def log_proxy_exit_ip(self):
+        """打印当前会话通过代理后的出口 IP 信息。"""
+        if not self.proxy:
+            return
+
+        last_error = ""
+        endpoints = [
+            "https://ip.oxylabs.io/location",
+            "https://httpbin.org/ip",
+        ]
+
+        for url in endpoints:
+            try:
+                r = self.session.get(
+                    url,
+                    headers=self._headers(
+                        url,
+                        accept="application/json,text/plain,*/*",
+                        referer=f"{self.BASE}/",
+                    ),
+                    timeout=20,
+                )
+                if r.status_code >= 400:
+                    continue
+
+                raw_data = r.json()
+                if not isinstance(raw_data, dict):
+                    continue
+                data = raw_data
+
+                if "ip" in data:
+                    parts = [f"ip={str(data.get('ip') or '').strip()}"]
+                    country = str(
+                        data.get("country") or data.get("country_code") or ""
+                    ).strip()
+                    city = str(data.get("city") or "").strip()
+                    region = str(data.get("region") or data.get("state") or "").strip()
+                    if country:
+                        parts.append(f"country={country}")
+                    if region:
+                        parts.append(f"region={region}")
+                    if city:
+                        parts.append(f"city={city}")
+                    self._log(f"[网络检查] 代理出口 {' '.join(parts)}")
+                    return
+
+                origin = str(data.get("origin") or "").strip()
+                if origin:
+                    self._log(f"[网络检查] 代理出口 ip={origin}")
+                    return
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+        self._log(
+            f"[网络检查] 代理出口 IP 检查失败: {last_error}"
+            if last_error
+            else "[网络检查] 代理出口 IP 检查失败"
+        )
+
     def _enter_stage(self, stage: str, detail: str = ""):
         self.last_stage = str(stage or "").strip()
         if self.last_stage:
@@ -361,10 +421,9 @@ class ChatGPTClient:
 
     def get_next_auth_session_token(self):
         """获取 ChatGPT next-auth 会话 Cookie。"""
-        return (
-            self._get_cookie_value("__Secure-next-auth.session-token", "chatgpt.com")
-            or self._get_cookie_value("__Secure-authjs.session-token", "chatgpt.com")
-        )
+        return self._get_cookie_value(
+            "__Secure-next-auth.session-token", "chatgpt.com"
+        ) or self._get_cookie_value("__Secure-authjs.session-token", "chatgpt.com")
 
     def fetch_chatgpt_session(self, max_attempts=5, retry_delay=1.2):
         """请求 ChatGPT Session 接口并返回原始会话数据。"""
@@ -750,7 +809,9 @@ class ChatGPTClient:
             if r.status_code == 200:
                 data = r.json()
                 self._log("注册成功")
-                self._log(f"authorize_continue/register_user 响应 URL: {str(r.url)[:120]}")
+                self._log(
+                    f"authorize_continue/register_user 响应 URL: {str(r.url)[:120]}"
+                )
                 return True, "注册成功"
             else:
                 try:
@@ -795,7 +856,9 @@ class ChatGPTClient:
                 payload = {}
 
             if isinstance(payload, dict) and payload:
-                next_state = self._state_from_payload(payload, current_url=str(r.url) or url)
+                next_state = self._state_from_payload(
+                    payload, current_url=str(r.url) or url
+                )
                 self._log(f"验证码发送响应: {describe_flow_state(next_state)}")
                 self._log(f"otp/send 当前 URL: {str(r.url)[:120]}")
             else:
@@ -1070,7 +1133,9 @@ class ChatGPTClient:
                 otp_send_attempts += 1
                 self._log(f"发送注册验证码: attempt={otp_send_attempts}")
                 if not self.send_email_otp(
-                    referer=state.current_url or state.continue_url or f"{self.AUTH}/create-account/password"
+                    referer=state.current_url
+                    or state.continue_url
+                    or f"{self.AUTH}/create-account/password"
                 ):
                     self._log("发送验证码接口返回失败，继续等待邮箱中的验证码...")
                 else:
@@ -1091,7 +1156,9 @@ class ChatGPTClient:
                     )
                     otp_send_attempts += 1
                     resend_ok = self.send_email_otp(
-                        referer=state.current_url or state.continue_url or f"{self.AUTH}/email-verification"
+                        referer=state.current_url
+                        or state.continue_url
+                        or f"{self.AUTH}/email-verification"
                     )
                     if resend_ok:
                         self._log(f"重发验证码成功: attempt={otp_send_attempts}")
@@ -1136,7 +1203,10 @@ class ChatGPTClient:
                 continue
 
             if self._state_requires_navigation(state):
-                if "workspace" in f"{state.continue_url} {state.current_url}".lower() or "consent" in f"{state.continue_url} {state.current_url}".lower():
+                if (
+                    "workspace" in f"{state.continue_url} {state.current_url}".lower()
+                    or "consent" in f"{state.continue_url} {state.current_url}".lower()
+                ):
                     self._enter_stage("workspace_select", describe_flow_state(state))
                 elif state.page_type == "external_url":
                     self._enter_stage("token_exchange", describe_flow_state(state))
