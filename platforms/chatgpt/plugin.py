@@ -124,6 +124,23 @@ class ChatGPTPlatform(BasePlatform):
                         exclude_codes=exclude_codes,
                     )
 
+                def get_confirmation_link(
+                    self,
+                    email=None,
+                    timeout=120,
+                ):
+                    if not self._acct:
+                        raise RuntimeError("邮箱账户尚未创建，无法获取确认链接")
+                    wait_for_link = getattr(_mailbox, "wait_for_link", None)
+                    if not callable(wait_for_link):
+                        return None
+                    return wait_for_link(
+                        self._acct,
+                        link_pattern="continue-registration",
+                        timeout=_resolve_mailbox_timeout(timeout),
+                        before_ids=self._before_ids,
+                    )
+
                 def update_status(self, success, error=None):
                     pass
 

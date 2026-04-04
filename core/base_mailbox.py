@@ -112,6 +112,35 @@ class BaseMailbox(ABC):
                 return m.group(1) if m.groups() else m.group(0)
         return None
 
+    @staticmethod
+    def _extract_continue_registration_link(text: str) -> Optional[str]:
+        """从邮件原始内容(含 HTML)中提取 OpenAI continue-registration 确认链接。"""
+        import re
+        if not text:
+            return None
+        # 优先从 href 属性中提取（邮件 HTML 中按钮链接）
+        for m in re.finditer(r'href=["\']([^"\']*)["\']', text, re.IGNORECASE):
+            url = m.group(1).strip()
+            if 'continue-registration' in url:
+                return url
+        # 退而求其次，从纯文本中提取
+        m = re.search(r'(https?://[^\s<>"\'\']+continue-registration[^\s<>"\'\']*)', text)
+        if m:
+            return m.group(1).strip()
+        return None
+
+    def wait_for_link(
+        self,
+        account: "MailboxAccount",
+        link_pattern: str = "continue-registration",
+        timeout: int = 120,
+        before_ids: set = None,
+        **kwargs,
+    ) -> Optional[str]:
+        """等待并返回邮件中的确认链接（默认为 OpenAI continue-registration 链接）。
+        子类可覆盖此方法。默认返回 None 表示不支持。"""
+        return None
+
     def _decode_raw_content(self, raw: str) -> str:
         """解析邮件原始文本 (借鉴自 Fugle)，处理 Quoted-Printable 和 HTML 实体"""
         import quopri, html, re

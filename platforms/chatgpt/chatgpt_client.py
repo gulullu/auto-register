@@ -1146,6 +1146,58 @@ class ChatGPTClient:
             if self._state_is_email_otp(state):
                 self._enter_stage("otp", describe_flow_state(state))
                 self._log("等待邮箱验证码...")
+
+                # ---- 优先尝试 OpenAI 新版链接确认流程 ----
+                wait_for_link = getattr(skymail_client, "wait_for_confirmation_link", None)
+                if callable(wait_for_link):
+                    self._log("尝试从邮件中提取 continue-registration 确认链接...")
+                    try:
+                        link = wait_for_link(email, timeout=60)
+                    except Exception as e:
+                        self._log(f"提取确认链接异常: {e}")
+                        link = None
+                    if link and "continue-registration" in link:
+                        self._log("成功提取确认链接，访问确认链接以完成验证...")
+                        try:
+                            self._browser_pause()
+                            r_link = self.session.get(
+                                link,
+                                headers=self._headers(
+                                    link,
+                                    accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                                    referer=f"{self.AUTH}/email-verification",
+                                    navigation=True,
+                                ),
+                                allow_redirects=True,
+                                timeout=30,
+                            )
+                            final_url = str(r_link.url)
+                            self._log(f"确认链接访问完成: {r_link.status_code} -> {final_url[:160]}")
+                            content_type = (r_link.headers.get("content-type", "") or "").lower()
+                            if "application/json" in content_type:
+                                try:
+                                    next_state = self._state_from_payload(
+                                        r_link.json(), current_url=final_url
+                                    )
+                                except Exception:
+                                    next_state = self._state_from_url(final_url)
+                            else:
+                                next_state = self._state_from_url(final_url)
+                            if self._state_requires_navigation(next_state):
+                                _, next_state = self._follow_flow_state(
+                                    next_state,
+                                    referer=final_url,
+                                )
+                            otp_verified = True
+                            state = next_state
+                            self.last_registration_state = state
+                            continue
+                        except Exception as e:
+                            self._log(f"访问确认链接异常: {e}，降级到 OTP 验证码流程...")
+                    else:
+                        self._log("未提取到确认链接，继续使用 OTP 验证码流程...")
+
+                # ---- 传统 OTP 验证码流程 ----
                 otp_code = skymail_client.wait_for_verification_code(
                     email, timeout=otp_wait_timeout
                 )

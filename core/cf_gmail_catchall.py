@@ -159,6 +159,38 @@ class CFGmailCatchAllMailbox(BaseMailbox):
         to_field = str(msg.get("To") or "")
         return self._decode_raw_content(f"{subject} {to_field} {combined}")
 
+    def _decode_message_raw(self, message_bytes: bytes) -> str:
+        """解码邮件，保留原始 HTML（含 href 属性），用于链接提取。"""
+        try:
+            msg = email.message_from_bytes(message_bytes)
+        except Exception:
+            return ""
+        chunks = []
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.get_content_maintype() == "multipart":
+                    continue
+                disposition = str(part.get("Content-Disposition") or "")
+                if "attachment" in disposition.lower():
+                    continue
+                payload = part.get_payload(decode=True)
+                if payload is None or not isinstance(payload, (bytes, bytearray)):
+                    continue
+                charset = part.get_content_charset() or "utf-8"
+                try:
+                    chunks.append(payload.decode(charset, errors="ignore"))
+                except Exception:
+                    chunks.append(payload.decode("utf-8", errors="ignore"))
+        else:
+            payload = msg.get_payload(decode=True)
+            if payload is not None and isinstance(payload, (bytes, bytearray)):
+                charset = msg.get_content_charset() or "utf-8"
+                try:
+                    chunks.append(payload.decode(charset, errors="ignore"))
+                except Exception:
+                    chunks.append(payload.decode("utf-8", errors="ignore"))
+        return " ".join(chunks)
+
     def _search_ids(self, conn) -> list[str]:
         status, data = conn.search(None, "ALL")
         if status != "OK":
@@ -259,3 +291,54 @@ class CFGmailCatchAllMailbox(BaseMailbox):
             poll_once=poll_once,
             timeout_message=f"CFGmailCatchAll 等待验证码超时 ({timeout}s)",
         )
+
+    def wait_for_link(
+        self,
+        account: MailboxAccount,
+        link_pattern: str = "continue-registration",
+        timeout: int = 120,
+        before_ids: Optional[set] = None,
+        **kwargs,
+    ) -> Optional[str]:
+        """等待并从邮件中提取确认链接（保留原始 HTML 以读取 href）。"""
+        account_cfg, _reason, _lease_left = self._select_account()
+        seen = set(before_ids or [])
+
+        def poll_once() -> Optional[str]:
+            conn = self._connect_imap(account_cfg)
+            try:
+                for message_id in self._search_ids(conn):
+                    if not message_id or message_id in seen:
+                        continue
+                    seen.add(message_id)
+                    status, data = conn.fetch(message_id, "(RFC822)")
+                    if status != "OK" or not data:
+                        continue
+                    message_bytes = b""
+                    for part in data:
+                        if isinstance(part, tuple) and len(part) >= 2:
+                            message_bytes = part[1] or b""
+                            break
+                    if not message_bytes:
+                        continue
+                    raw_body = self._decode_message_raw(message_bytes)
+                    link = self._extract_continue_registration_link(raw_body)
+                    if link:
+                        self._log(f"[CFGmailCatchAll] 收到确认链接: {link[:120]}")
+                        return link
+            finally:
+                try:
+                    conn.logout()
+                except Exception:
+                    pass
+            return None
+
+        try:
+            return self._run_polling_wait(
+                timeout=timeout,
+                poll_interval=5,
+                poll_once=poll_once,
+                timeout_message=f"CFGmailCatchAll 等待确认链接超时 ({timeout}s)",
+            )
+        except TimeoutError:
+            return None
