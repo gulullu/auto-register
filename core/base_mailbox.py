@@ -10,16 +10,22 @@ from dataclasses import dataclass
 from typing import Optional, Any, Callable
 from .proxy_utils import build_requests_proxy_config
 
+import secrets
+
 def generate_human_like_email_local_part() -> str:
-    first_names = [ "alex", "jamie", "casey", "morgan", "taylor", "jordan", "sam", "chris", "cameron", "drew", "avery", "riley", "ryan", "blake", "quinn", "logan", "lucas", "ethan", "mason", "oliver", "liam", "noah", "james", "ben", "luke", "emma", "olivia", "ava", "sophia", "mia" ]
-    last_names = [ "carter", "parker", "miller", "ross", "cook", "lewis", "taylor", "walker", "clark", "hall", "young", "king", "wright", "scott", "green", "baker", "adams", "nelson", "hill", "campbell", "mitchell", "roberts", "turner", "phillips", "evans", "collins", "stewart" ]
-    middle_initial = "".join(random.choices("abcdefghijklmnopqrstuvwxyz", k=random.randint(0, 2)))
-    num_suffix = random.choice([
-        str(random.randint(1970, 2005)), 
-        str(random.randint(10, 99)),
-        str(random.randint(100, 999))
-    ])
-    return f"{random.choice(first_names)}{middle_initial}{random.choice(last_names)}{num_suffix}".lower()
+    first_names = ["alex", "jamie", "casey", "morgan", "taylor", "jordan", "sam", "chris", "cameron", "drew", "avery", "riley", "ryan", "blake", "quinn", "logan", "lucas", "ethan", "mason", "oliver", "liam", "noah", "james", "ben", "luke", "emma", "olivia", "ava", "sophia", "mia"]
+    last_names = ["carter", "parker", "miller", "ross", "cook", "lewis", "taylor", "walker", "clark", "hall", "young", "king", "wright", "scott", "green", "baker", "adams", "nelson", "hill", "campbell", "mitchell", "roberts", "turner", "phillips", "evans", "collins", "stewart"]
+    
+    f_name = secrets.choice(first_names)
+    l_name = secrets.choice(last_names)
+    
+    # 用 "." 或 "_" 连接，加入 2位数字 和 3个随机字母，彻底杜绝碰撞且不像纯数字。
+    # 结果示例: alex.carter92mzp
+    sep = secrets.choice([".", ""])
+    num = str(secrets.randbelow(90) + 10)  # 10~99
+    letters = "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(3))
+    
+    return f"{f_name}{sep}{l_name}{num}{letters}".lower()
 
 @dataclass
 class MailboxAccount:
