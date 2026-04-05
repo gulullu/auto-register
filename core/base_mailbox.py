@@ -19,13 +19,11 @@ def generate_human_like_email_local_part() -> str:
     f_name = secrets.choice(first_names)
     l_name = secrets.choice(last_names)
     
-    # 用 "." 或 "_" 连接，加入 2位数字 和 3个随机字母，彻底杜绝碰撞且不像纯数字。
-    # 结果示例: alex.carter92mzp
-    sep = secrets.choice([".", ""])
-    num = str(secrets.randbelow(90) + 10)  # 10~99
-    letters = "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(3))
+    # 加入用户要求的时间戳（取毫秒级时间戳的后6位）
+    import time
+    timestamp_suffix = str(int(time.time() * 1000))[-6:]
     
-    return f"{f_name}{sep}{l_name}{num}{letters}".lower()
+    return f"{f_name}{l_name}{timestamp_suffix}".lower()
 
 @dataclass
 class MailboxAccount:
