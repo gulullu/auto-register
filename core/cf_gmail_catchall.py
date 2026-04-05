@@ -85,21 +85,8 @@ class CFGmailCatchAllMailbox(BaseMailbox):
             return self._leased_account, "initial", lease_left
 
     def _generate_local_part(self) -> str:
-        # 扩展名字库以提供大量组合
-        first_names = [ "alex", "jamie", "casey", "morgan", "taylor", "jordan", "sam", "chris", "cameron", "drew", "avery", "riley", "ryan", "blake", "quinn", "logan", "lucas", "ethan", "mason", "oliver", "liam", "noah", "james", "ben", "luke", "emma", "olivia", "ava", "sophia", "mia" ]
-        last_names = [ "carter", "parker", "miller", "ross", "cook", "lewis", "taylor", "walker", "clark", "hall", "young", "king", "wright", "scott", "green", "baker", "adams", "nelson", "hill", "campbell", "mitchell", "roberts", "turner", "phillips", "evans", "collins", "stewart" ]
-        
-        # 混入 1~2 个随机字母充当中间名首字母，自然且增加极高的随机度
-        middle_initial = "".join(random.choices("abcdefghijklmnopqrstuvwxyz", k=random.randint(0, 2)))
-        
-        # 数字部分改为更逼真的 2~4 位数（例如真实的出生年份、或者简单的两位幸运数字）
-        num_suffix = random.choice([
-            str(random.randint(1970, 2005)), 
-            str(random.randint(10, 99)),
-            str(random.randint(100, 999))
-        ])
-        
-        return f"{random.choice(first_names)}{middle_initial}{random.choice(last_names)}{num_suffix}".lower()
+        from .base_mailbox import generate_human_like_email_local_part
+        return generate_human_like_email_local_part()
 
     def _connect_imap(self, account_cfg: _CatchAllAccount):
         if self.proxy:
