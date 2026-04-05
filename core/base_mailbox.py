@@ -10,6 +10,16 @@ from dataclasses import dataclass
 from typing import Optional, Any, Callable
 from .proxy_utils import build_requests_proxy_config
 
+def generate_human_like_email_local_part() -> str:
+    first_names = [ "alex", "jamie", "casey", "morgan", "taylor", "jordan", "sam", "chris", "cameron", "drew", "avery", "riley", "ryan", "blake", "quinn", "logan", "lucas", "ethan", "mason", "oliver", "liam", "noah", "james", "ben", "luke", "emma", "olivia", "ava", "sophia", "mia" ]
+    last_names = [ "carter", "parker", "miller", "ross", "cook", "lewis", "taylor", "walker", "clark", "hall", "young", "king", "wright", "scott", "green", "baker", "adams", "nelson", "hill", "campbell", "mitchell", "roberts", "turner", "phillips", "evans", "collins", "stewart" ]
+    middle_initial = "".join(random.choices("abcdefghijklmnopqrstuvwxyz", k=random.randint(0, 2)))
+    num_suffix = random.choice([
+        str(random.randint(1970, 2005)), 
+        str(random.randint(10, 99)),
+        str(random.randint(100, 999))
+    ])
+    return f"{random.choice(first_names)}{middle_initial}{random.choice(last_names)}{num_suffix}".lower()
 
 @dataclass
 class MailboxAccount:
@@ -92,72 +102,12 @@ class BaseMailbox(ABC):
         if not text:
             return None
 
-        patterns = []
-        if pattern:
-            patterns.append(pattern)
-
-        # 先匹配带明显语义的验证码，避免误提取 MIME boundary、时间戳等 6 位数字。
-        patterns.extend(
-            [
-                r"(?is)(?:verification\s+code|one[-\s]*time\s+(?:password|code)|security\s+code|login\s+code|验证码|校验码|动态码|認證碼|驗證碼)[^0-9]{0,30}(\d{6})",
-                r"(?is)\bcode\b[^0-9]{0,12}(\d{6})",
-                r"(?<!#)(?<!\d)(\d{6})(?!\d)",
-            ]
-        )
-
-        for regex in patterns:
-            m = re.search(regex, text)
-            if m:
-                # 兼容逻辑：若 pattern 中有捕获组则取 group(1)，否则取 group(0)
-                return m.group(1) if m.groups() else m.group(0)
-        return None
-
-    def _decode_raw_content(self, raw: str) -> str:
-        """解析邮件原始文本 (借鉴自 Fugle)，处理 Quoted-Printable 和 HTML 实体"""
-        import quopri, html, re
-
-        text = str(raw or "")
-        if not text:
-            return ""
-        # 简单切分 Header 和 Body
-        if "\r\n\r\n" in text:
-            text = text.split("\r\n\r\n", 1)[1]
-        elif "\n\n" in text:
-            text = text.split("\n\n", 1)[1]
-        try:
-            # 处理 Quoted-Printable
-            decoded_bytes = quopri.decodestring(text)
-            text = decoded_bytes.decode("utf-8", errors="ignore")
-        except Exception:
-            pass
-        # 清除 HTML 标签并反转义
-        text = html.unescape(text)
-        text = re.sub(r"(?im)^content-(?:type|transfer-encoding):.*$", " ", text)
-        text = re.sub(r"(?im)^--+[_=\w.-]+$", " ", text)
-        text = re.sub(r"(?i)----=_part_[\w.]+", " ", text)
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        return text
-
-    @abstractmethod
-    def get_current_ids(self, account: MailboxAccount) -> set:
-        """返回当前邮件 ID 集合（用于过滤旧邮件）"""
-        ...
-
-    def _yyds_safe_extract(self, text: str, pattern: str = None) -> Optional[str]:
-        """通用验证码提取逻辑：若有捕获组则返回 group(1)，否则返回 group(0)"""
-        import re
-
-        text = str(text or "")
-        if not text:
-            return None
-
-        # [修复点 1]：优先过滤掉所有 URL 链接，直接从根源防止提取到追踪链接（如 SendGrid）里的随机数字
+        # 优先过滤掉所有 URL 链接，防止提取到追踪链接（如 SendGrid）里的随机数字
         text = re.sub(r"https?://\S+", "", text)
 
         patterns = []
         if pattern:
-            # [修复点 2]：如果外部传入了纯 \d{6} 的粗糙正则，自动为其加上字母数字边界
+            # 如果外部传入了纯 \d{6} 的粗糙正则，自动为其加上字母数字边界
             if pattern in (r"\d{6}", r"(\d{6})"):
                 patterns.append(r"(?<![a-zA-Z0-9])(\d{6})(?![a-zA-Z0-9])")
             else:
@@ -168,7 +118,7 @@ class BaseMailbox(ABC):
             [
                 r"(?is)(?:verification\s+code|one[-\s]*time\s+(?:password|code)|security\s+code|login\s+code|验证码|校验码|动态码|認證碼|驗證碼)[^0-9]{0,30}(\d{6})",
                 r"(?is)\bcode\b[^0-9]{0,12}(\d{6})",
-                # [修复点 3]：修改兜底正则，严格要求 6 位数字前后不能有字母或数字（防止匹配 u20216706）
+                # 兜底正则：严格要求 6 位数字前后不能有字母或数字
                 r"(?<![a-zA-Z0-9])(\d{6})(?![a-zA-Z0-9])",
             ]
         )
@@ -180,16 +130,16 @@ class BaseMailbox(ABC):
                 return m.group(1) if m.groups() else m.group(0)
         return None
 
-    def _yyds_decode_raw_content(self, raw: str) -> str:
-        """解析邮件原始文本 (借鉴自 Fugle)，处理 Quoted-Printable 和 HTML 实体"""
+    def _decode_raw_content(self, raw: str) -> str:
+        """解析邮件原始文本，处理 Quoted-Printable 和 HTML 实体"""
         import quopri, html, re
 
         text = str(raw or "")
         if not text:
             return ""
 
-        # [修复点 4]：只有在明确包含常见邮件 Header 时，才进行 \r\n\r\n 切分。
-        # 否则会误删 MaliAPI 等直接返回的已解析 JSON 正文内容（遇到普通的正文换行就错误截断了）
+        # 只有在明确包含常见邮件 Header 时，才进行切分，
+        # 避免误删 API 直接返回的已解析 JSON 正文内容
         if re.search(
             r"(?im)^(?:Return-Path|Received|Date|From|To|Subject|Content-Type):", text
         ):
@@ -212,6 +162,18 @@ class BaseMailbox(ABC):
         text = re.sub(r"<[^>]+>", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
         return text
+
+    @abstractmethod
+    def get_current_ids(self, account: MailboxAccount) -> set:
+        """返回当前邮件 ID 集合（用于过滤旧邮件）"""
+        ...
+
+    # 向后兼容：_yyds_ 前缀方法已合并到基础方法中，保留别名
+    def _yyds_safe_extract(self, text: str, pattern: str = None) -> Optional[str]:
+        return self._safe_extract(text, pattern)
+
+    def _yyds_decode_raw_content(self, raw: str) -> str:
+        return self._decode_raw_content(raw)
 
 
 def create_mailbox(
@@ -1857,11 +1819,7 @@ class GPTMailMailbox(BaseMailbox):
 
     @staticmethod
     def _generate_local_part() -> str:
-        import string
-
-        prefix = "".join(random.choices(string.ascii_lowercase, k=6))
-        suffix = "".join(random.choices(string.digits, k=4))
-        return f"{prefix}{suffix}"
+        return generate_human_like_email_local_part()
 
     def _headers(self) -> dict[str, str]:
         headers = {"accept": "application/json"}
@@ -2059,11 +2017,7 @@ class OpenTrashMailMailbox(BaseMailbox):
 
     @staticmethod
     def _generate_local_part() -> str:
-        import string
-
-        prefix = "".join(random.choices(string.ascii_lowercase, k=8))
-        suffix = "".join(random.choices(string.digits, k=2))
-        return f"{prefix}{suffix}"
+        return generate_human_like_email_local_part()
 
     def _headers(self) -> dict[str, str]:
         return {"accept": "application/json, text/plain, */*"}
@@ -2405,12 +2359,7 @@ class CFWorkerMailbox(BaseMailbox):
             ) from e
 
     def _generate_local_part(self) -> str:
-        import string
-
-        # 避免纯数字开头，提高邮箱格式“像真人”的程度
-        prefix = "".join(random.choices(string.ascii_lowercase, k=6))
-        suffix = "".join(random.choices(string.digits, k=4))
-        return f"{prefix}{suffix}"
+        return generate_human_like_email_local_part()
 
     @staticmethod
     def _normalize_domain(domain: Any) -> str:
