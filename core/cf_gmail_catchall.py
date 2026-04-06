@@ -4,6 +4,7 @@ import json
 import random
 import threading
 import time
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -86,6 +87,7 @@ class CFGmailCatchAllMailbox(BaseMailbox):
 
     def _generate_local_part(self) -> str:
         from .base_mailbox import generate_human_like_email_local_part
+
         return generate_human_like_email_local_part()
 
     def _connect_imap(self, account_cfg: _CatchAllAccount):
@@ -131,6 +133,26 @@ class CFGmailCatchAllMailbox(BaseMailbox):
         subject = str(msg.get("Subject") or "")
         to_field = str(msg.get("To") or "")
         return self._decode_raw_content(f"{subject} {to_field} {combined}")
+
+    def _extract_message_metadata(
+        self, message_bytes: bytes
+    ) -> tuple[str, str, float | None]:
+        try:
+            msg = email.message_from_bytes(message_bytes)
+        except Exception:
+            return "", "", None
+
+        to_field = str(msg.get("To") or "")
+        delivered_to = str(msg.get("Delivered-To") or "")
+        timestamp = None
+        date_value = str(msg.get("Date") or "").strip()
+        if date_value:
+            try:
+                dt = parsedate_to_datetime(date_value)
+                timestamp = dt.timestamp()
+            except Exception:
+                timestamp = None
+        return to_field, delivered_to, timestamp
 
     def _search_ids(self, conn) -> list[str]:
         status, data = conn.search(None, "ALL")
@@ -182,20 +204,22 @@ class CFGmailCatchAllMailbox(BaseMailbox):
     ) -> str:
         account_cfg, _reason, _lease_left = self._select_account()
         seen = set(before_ids or [])
+        target_email = str(getattr(account, "email", "") or "").strip().lower()
         exclude_codes = {
             str(code).strip()
             for code in (kwargs.get("exclude_codes") or set())
             if str(code or "").strip()
         }
+        otp_sent_at = kwargs.get("otp_sent_at")
+        otp_cutoff = float(otp_sent_at) - 10 if otp_sent_at else None
         keyword_lc = str(keyword or "").strip().lower()
 
         def poll_once() -> Optional[str]:
             conn = self._connect_imap(account_cfg)
             try:
-                for message_id in self._search_ids(conn):
+                for message_id in reversed(self._search_ids(conn)):
                     if not message_id or message_id in seen:
                         continue
-                    seen.add(message_id)
                     status, data = conn.fetch(message_id, "(RFC822)")
                     if status != "OK" or not data:
                         continue
@@ -206,6 +230,20 @@ class CFGmailCatchAllMailbox(BaseMailbox):
                             break
                     if not message_bytes:
                         continue
+                    to_field, delivered_to, message_ts = self._extract_message_metadata(
+                        message_bytes
+                    )
+                    alias_target = " ".join((to_field, delivered_to)).lower()
+                    if target_email and target_email not in alias_target:
+                        body_preview = self._decode_message(message_bytes).lower()
+                        if target_email not in body_preview:
+                            continue
+                    if otp_cutoff and message_ts and message_ts < otp_cutoff:
+                        self._log(
+                            f"[CFGmailCatchAll] 跳过旧邮件 message_id={message_id} ts={int(message_ts)}"
+                        )
+                        continue
+                    seen.add(message_id)
                     body = self._decode_message(message_bytes)
                     if keyword_lc and keyword_lc not in body.lower():
                         continue

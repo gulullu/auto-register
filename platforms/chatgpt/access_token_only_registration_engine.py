@@ -26,6 +26,10 @@ class EmailServiceAdapter:
         self.log_fn = log_fn
         self._used_codes = set()
 
+    def reset(self, email):
+        self.email = email
+        self._used_codes.clear()
+
     def wait_for_verification_code(
         self, email, timeout=60, otp_sent_at=None, exclude_codes=None
     ):
@@ -99,10 +103,22 @@ class AccessTokenOnlyRegistrationEngine:
         ]
         return any(marker.lower() in text for marker in retriable_markers)
 
+    @staticmethod
+    def _should_rotate_email_on_retry(message: str) -> bool:
+        text = str(message or "").lower()
+        markers = (
+            "failed to register username",
+            "user_already_exists",
+            "wrong_email_otp_code",
+            "验证码失败",
+        )
+        return any(marker in text for marker in markers)
+
     def run(self) -> RegistrationResult:
         result = RegistrationResult(success=False, logs=self.logs)
         try:
             last_error = ""
+            rotate_email_on_retry = True
             for attempt in range(self.max_retries):
                 try:
                     if attempt == 0:
@@ -115,6 +131,9 @@ class AccessTokenOnlyRegistrationEngine:
                         time.sleep(1)
 
                     # 1. 创建邮箱
+                    if attempt > 0 and rotate_email_on_retry:
+                        self.email = None
+
                     email_data = self.email_service.create_email()
                     email_addr = self.email or (
                         email_data.get("email") if email_data else None
@@ -162,8 +181,14 @@ class AccessTokenOnlyRegistrationEngine:
 
                     if not success:
                         last_error = f"注册流失败: {msg}"
+                        rotate_email_on_retry = self._should_rotate_email_on_retry(msg)
                         if attempt < self.max_retries - 1 and self._should_retry(msg):
                             self._log(f"注册流失败，准备整流程重试: {msg}")
+                            if rotate_email_on_retry:
+                                self._log(
+                                    f"本轮失败将丢弃当前邮箱并换新地址: {email_addr}",
+                                    "warning",
+                                )
                             continue
                         result.error_message = last_error
                         return result
@@ -205,6 +230,7 @@ class AccessTokenOnlyRegistrationEngine:
                     last_error = (
                         f"注册成功，但复用会话获取 AccessToken 失败: {session_result}"
                     )
+                    rotate_email_on_retry = True
                     if attempt < self.max_retries - 1:
                         self._log(f"{last_error}，准备整流程重试")
                         continue
@@ -214,6 +240,9 @@ class AccessTokenOnlyRegistrationEngine:
                     raise
                 except Exception as attempt_error:
                     last_error = str(attempt_error)
+                    rotate_email_on_retry = self._should_rotate_email_on_retry(
+                        last_error
+                    )
                     if attempt < self.max_retries - 1 and self._should_retry(
                         last_error
                     ):

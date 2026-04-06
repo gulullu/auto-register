@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import cast
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
@@ -234,7 +235,7 @@ class RefreshTokenRegistrationEngine:
                 continue
             value = self.extra_config.get(key)
             try:
-                parsed = int(value)
+                parsed = int(value if value is not None else default)
             except Exception:
                 continue
             return max(minimum, min(parsed, maximum))
@@ -244,11 +245,20 @@ class RefreshTokenRegistrationEngine:
     def _should_switch_to_login_after_register_failure(message: str) -> bool:
         text = str(message or "").lower()
         markers = (
-            "user_already_exists",
             "account already exists",
             "please login instead",
             "add_phone",
             "add-phone",
+        )
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _is_email_already_registered_error(message: str) -> bool:
+        text = str(message or "").lower()
+        markers = (
+            "user_already_exists",
+            "account already exists",
+            "already exists for this email address",
         )
         return any(marker in text for marker in markers)
 
@@ -390,6 +400,13 @@ class RefreshTokenRegistrationEngine:
             minimum=30,
             maximum=3600,
         )
+        email_collision_retries = self._read_int_config(
+            "chatgpt_email_collision_retries",
+            fallback_keys=("register_max_retries",),
+            default=2,
+            minimum=1,
+            maximum=10,
+        )
 
         try:
             registration_message = ""
@@ -403,22 +420,8 @@ class RefreshTokenRegistrationEngine:
 
             if not fixed_email:
                 self.email = None
-
-            self._log("1. 创建邮箱...")
-            if not self._create_email():
-                last_error = "创建邮箱失败"
-                result.error_message = last_error
-                return result
-
-            result.email = self.email or ""
             self.password = self.password or generate_random_password(16)
             result.password = self.password
-
-            first_name, last_name = generate_random_name()
-            birthdate = generate_random_birthday()
-            self._log(f"邮箱: {result.email}")
-            self._log(f"密码: {self.password}")
-            self._log(f"注册信息: {first_name} {last_name}, 生日: {birthdate}")
             self._log(
                 "流程策略: 注册阶段推进到 about_you 后切换到 OAuth 流程继续完成后续步骤"
             )
@@ -429,43 +432,97 @@ class RefreshTokenRegistrationEngine:
                 "oauth_wait=读取 OAuthClient 配置（默认600s）"
             )
 
-            email_adapter = EmailServiceAdapter(
-                self.email_service,
-                result.email,
-                self._log,
-            )
+            register_client = None
+            email_adapter = None
+            first_name = ""
+            last_name = ""
+            birthdate = ""
+            registered = False
 
-            register_client = self._build_chatgpt_client()
-            register_client.log_proxy_exit_ip()
-            self._log(
-                "2. 执行注册状态机（interrupt 模式：不在注册阶段提交 about_you）..."
-            )
-            registered, registration_message = register_client.register_complete_flow(
-                result.email,
-                self.password,
-                first_name,
-                last_name,
-                birthdate,
-                email_adapter,
-                stop_before_about_you_submission=True,
-                otp_wait_timeout=register_otp_wait_seconds,
-                otp_resend_wait_timeout=register_otp_resend_wait_seconds,
-            )
+            for register_attempt in range(1, email_collision_retries + 1):
+                if register_attempt > 1:
+                    self._log(
+                        f"检测到邮箱已存在，切换新邮箱重试 {register_attempt}/{email_collision_retries} ...",
+                        "warning",
+                    )
+                    self.email = None
+
+                self._log("1. 创建邮箱...")
+                if not self._create_email():
+                    last_error = "创建邮箱失败"
+                    result.error_message = last_error
+                    return result
+
+                result.email = self.email or ""
+                first_name, last_name = generate_random_name()
+                birthdate = generate_random_birthday()
+                self._log(f"邮箱: {result.email}")
+                self._log(f"密码: {self.password}")
+                self._log(f"注册信息: {first_name} {last_name}, 生日: {birthdate}")
+
+                email_adapter = EmailServiceAdapter(
+                    self.email_service,
+                    result.email,
+                    self._log,
+                )
+
+                register_client = self._build_chatgpt_client()
+                register_client.log_proxy_exit_ip()
+                self._log(
+                    "2. 执行注册状态机（interrupt 模式：不在注册阶段提交 about_you）..."
+                )
+                registered, registration_message = (
+                    register_client.register_complete_flow(
+                        result.email,
+                        self.password,
+                        first_name,
+                        last_name,
+                        birthdate,
+                        email_adapter,
+                        stop_before_about_you_submission=True,
+                        otp_wait_timeout=register_otp_wait_seconds,
+                        otp_resend_wait_timeout=register_otp_resend_wait_seconds,
+                    )
+                )
+
+                if registered:
+                    break
+
+                if (
+                    (not fixed_email)
+                    and register_attempt < email_collision_retries
+                    and self._is_email_already_registered_error(registration_message)
+                ):
+                    self._log(
+                        f"注册命中已存在邮箱，当前邮箱将被丢弃: {result.email}",
+                        "warning",
+                    )
+                    continue
+                break
 
             if not registered:
-                if not self._should_switch_to_login_after_register_failure(
+                if fixed_email and self._is_email_already_registered_error(
+                    registration_message
+                ):
+                    self._log(
+                        "固定邮箱命中已存在账号，改走 OAuth 登录流程",
+                        "warning",
+                    )
+                    self._log(f"切换原因: {registration_message}")
+                    source = "login"
+                elif not self._should_switch_to_login_after_register_failure(
                     registration_message
                 ):
                     last_error = f"注册状态机失败: {registration_message}"
                     result.error_message = last_error
                     return result
-
-                self._log(
-                    "注册阶段命中可继续处理的终态，改走 OAuth 登录流程",
-                    "warning",
-                )
-                self._log(f"切换原因: {registration_message}")
-                source = "login"
+                else:
+                    self._log(
+                        "注册阶段命中可继续处理的终态，改走 OAuth 登录流程",
+                        "warning",
+                    )
+                    self._log(f"切换原因: {registration_message}")
+                    source = "login"
             else:
                 if registration_message == "pending_about_you_submission":
                     self._log(
@@ -492,17 +549,24 @@ class RefreshTokenRegistrationEngine:
             )
 
             if use_continued_session:
-                self._reuse_register_browser_context(register_client, oauth_client)
+                if register_client is None:
+                    last_error = "注册上下文缺失，无法承接前序 session"
+                    result.error_message = last_error
+                    return result
+                active_register_client = cast(ChatGPTClient, register_client)
+                self._reuse_register_browser_context(
+                    active_register_client, oauth_client
+                )
                 self._log("3. 承接前序 session，继续走 OAuth passwordless 流程")
                 self._log("4. 沿用前序阶段的 cookie / device_id / 浏览器指纹")
                 self._log("5. 登录成功后提交 about_you，并继续 workspace/token 流程")
                 tokens = oauth_client.login_and_get_tokens(
                     result.email,
                     self.password,
-                    device_id=getattr(register_client, "device_id", "") or "",
-                    user_agent=getattr(register_client, "ua", None),
-                    sec_ch_ua=getattr(register_client, "sec_ch_ua", None),
-                    impersonate=getattr(register_client, "impersonate", None),
+                    device_id=getattr(active_register_client, "device_id", "") or "",
+                    user_agent=getattr(active_register_client, "ua", None),
+                    sec_ch_ua=getattr(active_register_client, "sec_ch_ua", None),
+                    impersonate=getattr(active_register_client, "impersonate", None),
                     skymail_client=email_adapter,
                     prefer_passwordless_login=True,
                     allow_phone_verification=False,
@@ -517,6 +581,7 @@ class RefreshTokenRegistrationEngine:
                     login_source="post_register_workspace_continue",
                 )
             else:
+                active_register_client = register_client
                 self._log(
                     "3. 新开 OAuth session，按 screen_hint=login + passwordless OTP 登录..."
                 )
@@ -527,9 +592,9 @@ class RefreshTokenRegistrationEngine:
                     result.email,
                     self.password,
                     device_id="",
-                    user_agent=getattr(register_client, "ua", None),
-                    sec_ch_ua=getattr(register_client, "sec_ch_ua", None),
-                    impersonate=getattr(register_client, "impersonate", None),
+                    user_agent=getattr(active_register_client, "ua", None),
+                    sec_ch_ua=getattr(active_register_client, "sec_ch_ua", None),
+                    impersonate=getattr(active_register_client, "impersonate", None),
                     skymail_client=email_adapter,
                     prefer_passwordless_login=True,
                     allow_phone_verification=False,

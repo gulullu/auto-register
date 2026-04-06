@@ -12,18 +12,80 @@ from .proxy_utils import build_requests_proxy_config
 
 import secrets
 
+
 def generate_human_like_email_local_part() -> str:
-    first_names = ["alex", "jamie", "casey", "morgan", "taylor", "jordan", "sam", "chris", "cameron", "drew", "avery", "riley", "ryan", "blake", "quinn", "logan", "lucas", "ethan", "mason", "oliver", "liam", "noah", "james", "ben", "luke", "emma", "olivia", "ava", "sophia", "mia"]
-    last_names = ["carter", "parker", "miller", "ross", "cook", "lewis", "taylor", "walker", "clark", "hall", "young", "king", "wright", "scott", "green", "baker", "adams", "nelson", "hill", "campbell", "mitchell", "roberts", "turner", "phillips", "evans", "collins", "stewart"]
-    
+    first_names = [
+        "alex",
+        "jamie",
+        "casey",
+        "morgan",
+        "taylor",
+        "jordan",
+        "sam",
+        "chris",
+        "cameron",
+        "drew",
+        "avery",
+        "riley",
+        "ryan",
+        "blake",
+        "quinn",
+        "logan",
+        "lucas",
+        "ethan",
+        "mason",
+        "oliver",
+        "liam",
+        "noah",
+        "james",
+        "ben",
+        "luke",
+        "emma",
+        "olivia",
+        "ava",
+        "sophia",
+        "mia",
+    ]
+    last_names = [
+        "carter",
+        "parker",
+        "miller",
+        "ross",
+        "cook",
+        "lewis",
+        "taylor",
+        "walker",
+        "clark",
+        "hall",
+        "young",
+        "king",
+        "wright",
+        "scott",
+        "green",
+        "baker",
+        "adams",
+        "nelson",
+        "hill",
+        "campbell",
+        "mitchell",
+        "roberts",
+        "turner",
+        "phillips",
+        "evans",
+        "collins",
+        "stewart",
+    ]
+
     f_name = secrets.choice(first_names)
     l_name = secrets.choice(last_names)
-    
-    # 加入用户要求的时间戳（取毫秒级时间戳的后6位）
+
     import time
-    timestamp_suffix = str(int(time.time() * 1000))[-6:]
-    
-    return f"{f_name}{l_name}{timestamp_suffix}".lower()
+
+    alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+    time_suffix = format(int(time.time() * 1000), "x")[-5:]
+    random_suffix = "".join(secrets.choice(alphabet) for _ in range(5))
+    return f"{f_name}{l_name}{time_suffix}{random_suffix}".lower()
+
 
 @dataclass
 class MailboxAccount:
@@ -287,6 +349,7 @@ def create_mailbox(
         )
     elif provider == "cf_gmail_catchall":
         from .cf_gmail_catchall import CFGmailCatchAllMailbox
+
         return CFGmailCatchAllMailbox(
             accounts=extra.get("cf_gmail_accounts")
             or extra.get("CF_GMAIL_ACCOUNTS")
