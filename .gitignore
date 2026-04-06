@@ -78,3 +78,6 @@ kiro_error.*
 
 # 本地数据文件
 account_manager.db
+
+# Kilo local plans
+.kilo/plans/
