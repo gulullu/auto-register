@@ -1,6 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
 from core.config_store import config_store
+from services.mail_imports import MailImportExecuteRequest, MailImportSnapshotRequest, mail_import_registry
 
 router = APIRouter(prefix="/config", tags=["config"])
 
@@ -34,6 +36,7 @@ CONFIG_KEYS = [
     "cloudmail_subdomain",
     "cloudmail_timeout",
     "mail_provider",
+    "outlook_backend",
     "mailbox_otp_timeout_seconds",
     "maliapi_base_url",
     "maliapi_api_key",
@@ -45,10 +48,18 @@ CONFIG_KEYS = [
     "applemail_mailboxes",
     "gptmail_base_url",
     "gptmail_api_key",
+    "gptmail_mode",
     "gptmail_domain",
     "opentrashmail_api_url",
     "opentrashmail_domain",
     "opentrashmail_password",
+    "cfrouting_domain",
+    "cfrouting_imap_server",
+    "cfrouting_imap_port",
+    "cfrouting_username",
+    "cfrouting_password",
+    "cfrouting_mailboxes",
+    "cfrouting_poll_interval_seconds",
     "cfworker_api_url",
     "cfworker_admin_token",
     "cfworker_custom_auth",
@@ -96,6 +107,7 @@ CONFIG_KEYS = [
     "grok2api_quota",
     "kiro_manager_path",
     "kiro_manager_exe",
+    "external_apps_update_mode",
     "contribution_enabled",
     "contribution_server_url",
     "contribution_key",
@@ -116,6 +128,8 @@ class AppleMailImportRequest(BaseModel):
 @router.get("")
 def get_config():
     all_cfg = config_store.get_all()
+    if all_cfg.get("mail_provider") == "outlook":
+        all_cfg["mail_provider"] = "microsoft"
     if not all_cfg.get("mail_provider"):
         all_cfg["mail_provider"] = "luckmail"
     if not all_cfg.get("applemail_base_url"):
@@ -124,12 +138,24 @@ def get_config():
         all_cfg["applemail_pool_dir"] = "mail"
     if not all_cfg.get("applemail_mailboxes"):
         all_cfg["applemail_mailboxes"] = "INBOX,Junk"
+    if not all_cfg.get("outlook_backend"):
+        all_cfg["outlook_backend"] = "graph"
+    if not all_cfg.get("cfrouting_imap_port"):
+        all_cfg["cfrouting_imap_port"] = "993"
+    if not all_cfg.get("cfrouting_mailboxes"):
+        all_cfg["cfrouting_mailboxes"] = "INBOX"
     if not all_cfg.get("gptmail_base_url"):
         all_cfg["gptmail_base_url"] = "https://mail.chatgpt.org.uk"
+    if not all_cfg.get("gptmail_mode"):
+        all_cfg["gptmail_mode"] = "api"
     if not all_cfg.get("luckmail_base_url"):
         all_cfg["luckmail_base_url"] = "https://mails.luckyous.com/"
+    if not str(all_cfg.get("contribution_enabled", "") or "").strip():
+        all_cfg["contribution_enabled"] = "0"
     if not all_cfg.get("contribution_server_url"):
         all_cfg["contribution_server_url"] = "http://new.xem8k5.top:7317/"
+    if not all_cfg.get("external_apps_update_mode"):
+        all_cfg["external_apps_update_mode"] = "tag"
     # 只返回已知 key，未设置的返回空字符串
     return {k: all_cfg.get(k, "") for k in CONFIG_KEYS}
 
@@ -138,47 +164,39 @@ def get_config():
 def update_config(body: ConfigUpdate):
     # 只允许更新已知 key
     safe = {k: v for k, v in body.data.items() if k in CONFIG_KEYS}
+    if safe.get("mail_provider") == "outlook":
+        safe["mail_provider"] = "microsoft"
     config_store.set_many(safe)
     return {"ok": True, "updated": list(safe.keys())}
 
 
 @router.post("/applemail/import")
 def import_applemail_pool(body: AppleMailImportRequest):
-    from core.applemail_pool import (
-        load_applemail_pool_snapshot,
-        save_applemail_pool_json,
-    )
-
-    pool_dir = (
-        str(body.pool_dir or config_store.get("applemail_pool_dir", "mail")).strip()
-        or "mail"
-    )
-    result = save_applemail_pool_json(
-        body.content,
-        pool_dir=pool_dir,
-        filename=body.filename,
-    )
-
-    if body.bind_to_config:
-        config_store.set_many(
-            {
-                "applemail_pool_dir": pool_dir,
-                "applemail_pool_file": result["filename"],
-            }
+    try:
+        strategy = mail_import_registry.get("applemail")
+        result = strategy.execute(
+            MailImportExecuteRequest(
+                type="applemail",
+                content=body.content,
+                filename=body.filename,
+                pool_dir=body.pool_dir,
+                bind_to_config=body.bind_to_config,
+            )
         )
-
-    snapshot = load_applemail_pool_snapshot(
-        pool_file=result["filename"],
-        pool_dir=pool_dir,
-    )
-
-    return {
-        **result,
-        "pool_dir": pool_dir,
-        "bound_to_config": body.bind_to_config,
-        "items": snapshot["items"],
-        "truncated": snapshot["truncated"],
-    }
+        snapshot = result.snapshot.model_dump()
+        return {
+            "filename": snapshot["filename"],
+            "path": result.meta.get("path", ""),
+            "count": snapshot["count"],
+            "pool_dir": snapshot["pool_dir"],
+            "bound_to_config": bool(result.meta.get("bound_to_config")),
+            "items": snapshot["items"],
+            "truncated": snapshot["truncated"],
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/applemail/pool")
@@ -186,29 +204,17 @@ def get_applemail_pool_snapshot(
     pool_dir: str = "",
     pool_file: str = "",
 ):
-    from core.applemail_pool import load_applemail_pool_snapshot
-
-    resolved_pool_dir = (
-        str(pool_dir or config_store.get("applemail_pool_dir", "mail")).strip()
-        or "mail"
-    )
-    resolved_pool_file = str(
-        pool_file or config_store.get("applemail_pool_file", "")
-    ).strip()
     try:
-        snapshot = load_applemail_pool_snapshot(
-            pool_file=resolved_pool_file,
-            pool_dir=resolved_pool_dir,
+        strategy = mail_import_registry.get("applemail")
+        snapshot = strategy.get_snapshot(
+            MailImportSnapshotRequest(
+                type="applemail",
+                pool_dir=pool_dir,
+                pool_file=pool_file,
+            )
         )
-    except Exception:
-        snapshot = {
-            "filename": resolved_pool_file,
-            "path": "",
-            "count": 0,
-            "items": [],
-            "truncated": False,
-        }
-    return {
-        **snapshot,
-        "pool_dir": resolved_pool_dir,
-    }
+        return snapshot.model_dump()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

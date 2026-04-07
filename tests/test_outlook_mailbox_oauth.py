@@ -1,0 +1,194 @@
+import unittest
+from unittest import mock
+
+from core.base_mailbox import MailboxAccount, OutlookMailbox, create_mailbox
+
+
+class _FakeResponse:
+    def __init__(self, status_code, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = text or ""
+        self.content = b"{}" if payload is not None else b""
+
+    def json(self):
+        return dict(self._payload)
+
+
+class OutlookMailboxOAuthTests(unittest.TestCase):
+    def test_create_mailbox_outlook_defaults_to_graph_backend(self):
+        mailbox = create_mailbox("outlook", extra={})
+
+        self.assertIsInstance(mailbox, OutlookMailbox)
+        self.assertEqual(mailbox._backend_name, "graph")
+
+    @mock.patch("requests.post")
+    def test_fetch_oauth_token_graph_backend_prefers_graph_scope(self, mock_post):
+        mailbox = OutlookMailbox(token_endpoint="https://token.example.test")
+
+        responses = [
+            _FakeResponse(
+                400,
+                text='{"error":"invalid_grant","error_description":"scopes requested are unauthorized"}',
+            ),
+            _FakeResponse(
+                200,
+                payload={"access_token": "access-token-demo"},
+                text='{"access_token":"access-token-demo"}',
+            ),
+        ]
+        mock_post.side_effect = responses
+
+        token = mailbox._fetch_oauth_token(
+            email="demo@outlook.com",
+            client_id="client-id",
+            refresh_token="refresh-token",
+        )
+
+        self.assertEqual(token, "access-token-demo")
+        self.assertEqual(mock_post.call_count, 2)
+
+        first_scope = mock_post.call_args_list[0].kwargs["data"].get("scope", "")
+        second_scope = mock_post.call_args_list[1].kwargs["data"].get("scope", "")
+        self.assertEqual(
+            first_scope,
+            "https://graph.microsoft.com/.default",
+        )
+        self.assertEqual(
+            second_scope,
+            "https://outlook.office.com/.default offline_access",
+        )
+
+    @mock.patch("requests.post")
+    def test_fetch_oauth_token_imap_backend_prefers_imap_scope(self, mock_post):
+        mailbox = OutlookMailbox(
+            token_endpoint="https://token.example.test",
+            backend="imap",
+        )
+        mock_post.side_effect = [
+            _FakeResponse(
+                200,
+                payload={"access_token": "imap-token"},
+                text='{"access_token":"imap-token"}',
+            ),
+        ]
+
+        token = mailbox._fetch_oauth_token(
+            email="demo@outlook.com",
+            client_id="client-id",
+            refresh_token="refresh-token",
+        )
+
+        self.assertEqual(token, "imap-token")
+        self.assertEqual(
+            mock_post.call_args.kwargs["data"].get("scope", ""),
+            "https://outlook.office.com/IMAP.AccessAsUser.All offline_access",
+        )
+
+    @mock.patch("requests.post")
+    @mock.patch("requests.request")
+    def test_wait_for_code_uses_graph_backend_by_default(self, mock_request, mock_post):
+        mailbox = OutlookMailbox(token_endpoint="https://token.example.test")
+        account = MailboxAccount(
+            email="demo@outlook.com",
+            extra={
+                "client_id": "client-id",
+                "refresh_token": "refresh-token",
+            },
+        )
+        mock_post.return_value = _FakeResponse(
+            200,
+            payload={"access_token": "graph-token", "expires_in": 3600},
+            text='{"access_token":"graph-token","expires_in":3600}',
+        )
+        mock_request.return_value = _FakeResponse(
+            200,
+            payload={
+                "value": [
+                    {
+                        "id": "message-1",
+                        "subject": "OpenAI verification code",
+                        "bodyPreview": "Your verification code is 123456",
+                    }
+                ]
+            },
+        )
+
+        code = mailbox.wait_for_code(account, timeout=5)
+
+        self.assertEqual(code, "123456")
+        self.assertIn(
+            "/me/mailFolders/inbox/messages",
+            str(mock_request.call_args.args[1]),
+        )
+
+    @mock.patch("requests.post")
+    @mock.patch("requests.request")
+    def test_wait_for_code_reads_deleteditems_folder_when_inbox_has_no_new_code(self, mock_request, mock_post):
+        mailbox = OutlookMailbox(token_endpoint="https://token.example.test")
+        account = MailboxAccount(
+            email="demo@outlook.com",
+            extra={
+                "client_id": "client-id",
+                "refresh_token": "refresh-token",
+            },
+        )
+        mock_post.return_value = _FakeResponse(
+            200,
+            payload={"access_token": "graph-token", "expires_in": 3600},
+            text='{"access_token":"graph-token","expires_in":3600}',
+        )
+        mock_request.side_effect = [
+            _FakeResponse(200, payload={"value": []}),
+            _FakeResponse(200, payload={"value": []}),
+            _FakeResponse(
+                200,
+                payload={
+                    "value": [
+                        {
+                            "id": "deleted-message-1",
+                            "subject": "OpenAI verification code",
+                            "bodyPreview": "Your verification code is 654321",
+                        }
+                    ]
+                },
+            ),
+        ]
+
+        code = mailbox.wait_for_code(account, timeout=5)
+
+        self.assertEqual(code, "654321")
+        requested_urls = [str(call.args[1]) for call in mock_request.call_args_list]
+        self.assertTrue(any("/me/mailFolders/deleteditems/messages" in url for url in requested_urls))
+
+    @mock.patch("requests.post")
+    def test_fetch_oauth_token_returns_empty_when_all_scope_attempts_fail(self, mock_post):
+        mailbox = OutlookMailbox(token_endpoint="https://token.example.test")
+        mock_post.return_value = _FakeResponse(
+            400,
+            text='{"error":"invalid_grant"}',
+        )
+
+        token = mailbox._fetch_oauth_token(
+            email="demo@outlook.com",
+            client_id="client-id",
+            refresh_token="refresh-token",
+        )
+
+        self.assertEqual(token, "")
+        attempted_scopes = [
+            call.kwargs["data"].get("scope", "")
+            for call in mock_post.call_args_list
+        ]
+        self.assertIn(
+            "https://graph.microsoft.com/.default",
+            attempted_scopes,
+        )
+        self.assertIn(
+            "https://outlook.office.com/.default offline_access",
+            attempted_scopes,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

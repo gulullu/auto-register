@@ -4,10 +4,10 @@ import json
 import random
 import threading
 import time
-
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Any, Callable
+from typing import Any, Callable, Optional
+
 from .proxy_utils import build_requests_proxy_config
 
 import secrets
@@ -197,8 +197,10 @@ class BaseMailbox(ABC):
         return None
 
     def _decode_raw_content(self, raw: str) -> str:
-        """解析邮件原始文本，处理 Quoted-Printable 和 HTML 实体"""
-        import quopri, html, re
+        """解析邮件原始文本 (借鉴自 Fugle)，处理 Quoted-Printable 和 HTML 实体"""
+        import html
+        import quopri
+        import re
 
         text = str(raw or "")
         if not text:
@@ -206,9 +208,7 @@ class BaseMailbox(ABC):
 
         # 只有在明确包含常见邮件 Header 时，才进行切分，
         # 避免误删 API 直接返回的已解析 JSON 正文内容
-        if re.search(
-            r"(?im)^(?:Return-Path|Received|Date|From|To|Subject|Content-Type):", text
-        ):
+        if re.search(r"(?im)^(?:Return-Path|Received|Date|From|To|Subject|Content-Type):", text):
             if "\r\n\r\n" in text:
                 text = text.split("\r\n\r\n", 1)[1]
             elif "\n\n" in text:
@@ -242,9 +242,7 @@ class BaseMailbox(ABC):
         return self._decode_raw_content(raw)
 
 
-def create_mailbox(
-    provider: str, extra: dict = None, proxy: str = None
-) -> "BaseMailbox":
+def create_mailbox(provider: str, extra: dict = None, proxy: str = None) -> "BaseMailbox":
     """工厂方法：根据 provider 创建对应的 mailbox 实例"""
     extra = extra or {}
     if provider == "tempmail_lol":
@@ -264,9 +262,7 @@ def create_mailbox(
             timeout_value = 30
         return CloudMailMailbox(
             api_base=extra.get("cloudmail_api_base") or extra.get("base_url") or "",
-            admin_email=extra.get("cloudmail_admin_email")
-            or extra.get("admin_email")
-            or "",
+            admin_email=extra.get("cloudmail_admin_email") or extra.get("admin_email") or "",
             admin_password=extra.get("cloudmail_admin_password")
             or extra.get("admin_password")
             or extra.get("api_key")
@@ -279,9 +275,7 @@ def create_mailbox(
     elif provider == "duckmail":
         return DuckMailMailbox(
             api_url=(extra.get("duckmail_api_url") or "https://www.duckmail.sbs"),
-            provider_url=(
-                extra.get("duckmail_provider_url") or "https://api.duckmail.sbs"
-            ),
+            provider_url=(extra.get("duckmail_provider_url") or "https://api.duckmail.sbs"),
             bearer=(extra.get("duckmail_bearer") or "kevin273945"),
             domain=extra.get("duckmail_domain", ""),
             api_key=extra.get("duckmail_api_key", ""),
@@ -315,6 +309,7 @@ def create_mailbox(
             api_url=extra.get("gptmail_base_url", "https://mail.chatgpt.org.uk"),
             api_key=extra.get("gptmail_api_key", ""),
             domain=extra.get("gptmail_domain", ""),
+            mode=extra.get("gptmail_mode", "api"),
             proxy=proxy,
         )
     elif provider == "applemail":
@@ -330,6 +325,17 @@ def create_mailbox(
             api_url=extra.get("opentrashmail_api_url", ""),
             domain=extra.get("opentrashmail_domain", ""),
             password=extra.get("opentrashmail_password", ""),
+            proxy=proxy,
+        )
+    elif provider == "cfrouting":
+        return CFRoutingMailbox(
+            domain=extra.get("cfrouting_domain", ""),
+            imap_server=extra.get("cfrouting_imap_server", ""),
+            imap_port=extra.get("cfrouting_imap_port", 993),
+            username=extra.get("cfrouting_username", ""),
+            password=extra.get("cfrouting_password", ""),
+            mailboxes=extra.get("cfrouting_mailboxes", "INBOX"),
+            poll_interval_seconds=extra.get("cfrouting_poll_interval_seconds", 2),
             proxy=proxy,
         )
     elif provider == "cfworker":
@@ -351,9 +357,7 @@ def create_mailbox(
         from .cf_gmail_catchall import CFGmailCatchAllMailbox
 
         return CFGmailCatchAllMailbox(
-            accounts=extra.get("cf_gmail_accounts")
-            or extra.get("CF_GMAIL_ACCOUNTS")
-            or "",
+            accounts=extra.get("cf_gmail_accounts") or extra.get("CF_GMAIL_ACCOUNTS") or "",
             lease_seconds=extra.get("cf_gmail_lease_seconds", 1800),
             proxy=proxy,
         )
@@ -366,11 +370,13 @@ def create_mailbox(
             domain=extra.get("luckmail_domain", ""),
             proxy=proxy,
         )
-    elif provider == "outlook":
+    elif provider in {"outlook", "microsoft"}:
         return OutlookMailbox(
             imap_server=extra.get("outlook_imap_server", ""),
             imap_port=extra.get("outlook_imap_port", ""),
             token_endpoint=extra.get("outlook_token_endpoint", ""),
+            backend=extra.get("outlook_backend", ""),
+            graph_api_base=extra.get("outlook_graph_api_base", ""),
             proxy=proxy,
         )
     else:  # laoudo
@@ -445,31 +451,17 @@ class AppleMailMailbox(BaseMailbox):
             data = response.json()
         except Exception as exc:
             preview = (response.text or "")[:200]
-            raise RuntimeError(
-                f"AppleMail API {path} 返回非 JSON: HTTP {response.status_code} {preview}"
-            ) from exc
+            raise RuntimeError(f"AppleMail API {path} 返回非 JSON: HTTP {response.status_code} {preview}") from exc
 
         if response.status_code >= 400:
             if isinstance(data, dict):
-                message = (
-                    data.get("detail")
-                    or data.get("message")
-                    or data.get("error")
-                    or response.text
-                )
+                message = data.get("detail") or data.get("message") or data.get("error") or response.text
             else:
                 message = response.text
-            raise RuntimeError(
-                f"AppleMail API {path} 失败: {str(message or f'HTTP {response.status_code}').strip()}"
-            )
+            raise RuntimeError(f"AppleMail API {path} 失败: {str(message or f'HTTP {response.status_code}').strip()}")
 
         if isinstance(data, dict) and data.get("success") is False:
-            message = (
-                data.get("message")
-                or data.get("detail")
-                or data.get("error")
-                or "unknown error"
-            )
+            message = data.get("message") or data.get("detail") or data.get("error") or "unknown error"
             raise RuntimeError(f"AppleMail API {path} 失败: {str(message).strip()}")
 
         return data
@@ -581,9 +573,7 @@ class AppleMailMailbox(BaseMailbox):
 
         result = []
         seen = set()
-        for mailbox in ([account_mailbox] if account_mailbox else []) + list(
-            self.mailboxes
-        ):
+        for mailbox in ([account_mailbox] if account_mailbox else []) + list(self.mailboxes):
             name = str(mailbox or "").strip()
             if not name or name in seen:
                 continue
@@ -591,9 +581,7 @@ class AppleMailMailbox(BaseMailbox):
             result.append(name)
         return result or ["INBOX"]
 
-    def _build_request_payload(
-        self, account: MailboxAccount, mailbox: str
-    ) -> dict[str, Any]:
+    def _build_request_payload(self, account: MailboxAccount, mailbox: str) -> dict[str, Any]:
         extra = account.extra or {}
         refresh_token = str(extra.get("refresh_token") or "").strip()
         client_id = str(extra.get("client_id") or "").strip()
@@ -607,9 +595,7 @@ class AppleMailMailbox(BaseMailbox):
             "mailbox": mailbox,
         }
 
-    def _list_messages(
-        self, account: MailboxAccount, mailbox: str
-    ) -> list[dict[str, Any]]:
+    def _list_messages(self, account: MailboxAccount, mailbox: str) -> list[dict[str, Any]]:
         data = self._request_json(
             "GET",
             "/api/mail-all",
@@ -655,9 +641,7 @@ class AppleMailMailbox(BaseMailbox):
                 messages = self._list_messages(account, mailbox)
             except Exception:
                 continue
-            ids.update(
-                self._resolve_message_id(message, mailbox) for message in messages
-            )
+            ids.update(self._resolve_message_id(message, mailbox) for message in messages)
         return ids
 
     def wait_for_code(
@@ -671,9 +655,7 @@ class AppleMailMailbox(BaseMailbox):
     ) -> str:
         seen = {str(mid) for mid in (before_ids or set())}
         exclude_codes = {
-            str(code).strip()
-            for code in (kwargs.get("exclude_codes") or set())
-            if str(code or "").strip()
+            str(code).strip() for code in (kwargs.get("exclude_codes") or set()) if str(code or "").strip()
         }
 
         def poll_once() -> Optional[str]:
@@ -746,11 +728,7 @@ class LaoudoMailbox(BaseMailbox):
             )
             if r.status_code == 200:
                 mails = r.json().get("data", {}).get("list", []) or []
-                return {
-                    m.get("id") or m.get("emailId")
-                    for m in mails
-                    if m.get("id") or m.get("emailId")
-                }
+                return {m.get("id") or m.get("emailId") for m in mails if m.get("id") or m.get("emailId")}
         except Exception:
             pass
         return set()
@@ -792,11 +770,7 @@ class LaoudoMailbox(BaseMailbox):
                         if not mid or mid in seen:
                             continue
                         seen.add(mid)
-                        text = (
-                            str(mail.get("subject", ""))
-                            + " "
-                            + str(mail.get("content") or mail.get("html") or "")
-                        )
+                        text = str(mail.get("subject", "")) + " " + str(mail.get("content") or mail.get("html") or "")
                         if keyword and keyword.lower() not in text.lower():
                             continue
                         code = self._safe_extract(text, code_pattern)
@@ -827,9 +801,7 @@ class AitreMailbox(BaseMailbox):
         import requests
 
         try:
-            r = requests.get(
-                f"{self.api}/emails", params={"email": account.email}, timeout=10
-            )
+            r = requests.get(f"{self.api}/emails", params={"email": account.email}, timeout=10)
             emails = r.json().get("emails", [])
             return {str(m["id"]) for m in emails if "id" in m}
         except Exception:
@@ -898,9 +870,7 @@ class TempMailLolMailbox(BaseMailbox):
     def get_email(self) -> MailboxAccount:
         import requests
 
-        r = requests.post(
-            f"{self.api}/inbox/create", json={}, proxies=self.proxy, timeout=15
-        )
+        r = requests.post(f"{self.api}/inbox/create", json={}, proxies=self.proxy, timeout=15)
         data = r.json()
         email = data.get("address") or data.get("email", "")
         if not email:
@@ -957,13 +927,7 @@ class TempMailLolMailbox(BaseMailbox):
                     if otp_sent_at and mail.get("date", 0) / 1000 < otp_sent_at:
                         continue
                     seen.add(mid)
-                    text = (
-                        mail.get("subject", "")
-                        + " "
-                        + mail.get("body", "")
-                        + " "
-                        + mail.get("html", "")
-                    )
+                    text = mail.get("subject", "") + " " + mail.get("body", "") + " " + mail.get("html", "")
                     if keyword and keyword.lower() not in text.lower():
                         continue
                     code = self._safe_extract(text, code_pattern)
@@ -998,9 +962,7 @@ class SkyMailMailbox(BaseMailbox):
 
     def _ensure_config(self) -> None:
         if not self.api or not self.auth_token or not self.domain:
-            raise RuntimeError(
-                "SkyMail 未配置完整：请设置 skymail_api_base、skymail_token、skymail_domain"
-            )
+            raise RuntimeError("SkyMail 未配置完整：请设置 skymail_api_base、skymail_token、skymail_domain")
 
     def _gen_prefix(self) -> str:
         import random
@@ -1064,11 +1026,7 @@ class SkyMailMailbox(BaseMailbox):
                 if mid:
                     ids.add(str(mid))
                 else:
-                    digest = (
-                        str(msg.get("date") or msg.get("time") or "")
-                        + "|"
-                        + str(msg.get("subject") or "")
-                    )
+                    digest = str(msg.get("date") or msg.get("time") or "") + "|" + str(msg.get("subject") or "")
                     ids.add(f"idx-{i}-{digest}")
             return ids
         except Exception:
@@ -1092,11 +1050,7 @@ class SkyMailMailbox(BaseMailbox):
                 for i, msg in enumerate(mails):
                     mid = msg.get("id") or msg.get("mailId") or msg.get("messageId")
                     if not mid:
-                        digest = (
-                            str(msg.get("date") or msg.get("time") or "")
-                            + "|"
-                            + str(msg.get("subject") or "")
-                        )
+                        digest = str(msg.get("date") or msg.get("time") or "") + "|" + str(msg.get("subject") or "")
                         mid = f"idx-{i}-{digest}"
                     mid = str(mid)
                     if mid in seen:
@@ -1188,12 +1142,7 @@ class CloudMailMailbox(BaseMailbox):
             if isinstance(parsed, list):
                 iterable = parsed
             elif raw:
-                normalized = (
-                    raw.replace(";", "\n")
-                    .replace(",", "\n")
-                    .replace("|", "\n")
-                    .splitlines()
-                )
+                normalized = raw.replace(";", "\n").replace(",", "\n").replace("|", "\n").splitlines()
                 iterable = [item for item in normalized if item]
             else:
                 iterable = []
@@ -1222,9 +1171,7 @@ class CloudMailMailbox(BaseMailbox):
 
     def _ensure_config(self) -> None:
         if not self.api or not self.admin_password:
-            raise RuntimeError(
-                "CloudMail 未配置完整：请设置 cloudmail_api_base 与 cloudmail_admin_password"
-            )
+            raise RuntimeError("CloudMail 未配置完整：请设置 cloudmail_api_base 与 cloudmail_admin_password")
 
     def _headers(self, token: str = "") -> dict:
         headers = {
@@ -1251,9 +1198,7 @@ class CloudMailMailbox(BaseMailbox):
             timeout=self.timeout,
         )
         if r.status_code != 200:
-            raise RuntimeError(
-                f"CloudMail 生成 token 失败: {r.status_code} {str(r.text or '')[:200]}"
-            )
+            raise RuntimeError(f"CloudMail 生成 token 失败: {r.status_code} {str(r.text or '')[:200]}")
 
         try:
             data = r.json()
@@ -1373,11 +1318,7 @@ class CloudMailMailbox(BaseMailbox):
             value = message.get(key)
             if value not in (None, ""):
                 return str(value)
-        digest = (
-            str(message.get("date") or message.get("time") or "")
-            + "|"
-            + str(message.get("subject") or "")
-        )
+        digest = str(message.get("date") or message.get("time") or "") + "|" + str(message.get("subject") or "")
         return f"idx-{index}-{digest}"
 
     def _remember_seen_id(self, email: str, message_id: str) -> None:
@@ -1416,9 +1357,7 @@ class CloudMailMailbox(BaseMailbox):
         seen.update(self._load_seen_ids(target))
         otp_sent_at = kwargs.get("otp_sent_at")
         exclude_codes = {
-            str(code).strip()
-            for code in (kwargs.get("exclude_codes") or set())
-            if str(code or "").strip()
+            str(code).strip() for code in (kwargs.get("exclude_codes") or set()) if str(code or "").strip()
         }
 
         def poll_once() -> Optional[str]:
@@ -1518,39 +1457,27 @@ class DuckMailMailbox(BaseMailbox):
                     "x-api-provider-base-url": self.provider_url,
                 }
             )
-        r = requests.request(
-            method, url, headers=headers, proxies=self.proxy, timeout=15, **kwargs
-        )
+        r = requests.request(method, url, headers=headers, proxies=self.proxy, timeout=15, **kwargs)
         return r
 
     def get_email(self) -> MailboxAccount:
-        import random, string
+        import string
 
         username = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
         password = "Test" + "".join(random.choices(string.digits, k=8)) + "!"
-        domain = self.domain or self.provider_url.replace("https://api.", "").replace(
-            "https://", ""
-        )
+        domain = self.domain or self.provider_url.replace("https://api.", "").replace("https://", "")
         address = f"{username}@{domain}"
         print(f"[DuckMail] 创建账号: {address} direct={self._direct}")
         # 创建账号
-        r = self._request(
-            "POST", "/accounts", json={"address": address, "password": password}
-        )
+        r = self._request("POST", "/accounts", json={"address": address, "password": password})
         if r.status_code >= 400 or not r.text.strip().startswith("{"):
-            raise RuntimeError(
-                f"[DuckMail] 创建账号失败: HTTP {r.status_code} body={r.text[:300]}"
-            )
+            raise RuntimeError(f"[DuckMail] 创建账号失败: HTTP {r.status_code} body={r.text[:300]}")
         data = r.json()
         self._address = data.get("address", address)
         # 登录获取 token
-        r2 = self._request(
-            "POST", "/token", json={"address": self._address, "password": password}
-        )
+        r2 = self._request("POST", "/token", json={"address": self._address, "password": password})
         if r2.status_code >= 400 or not r2.text.strip().startswith(("{", "[")):
-            raise RuntimeError(
-                f"[DuckMail] 登录失败: HTTP {r2.status_code} body={r2.text[:300]}"
-            )
+            raise RuntimeError(f"[DuckMail] 登录失败: HTTP {r2.status_code} body={r2.text[:300]}")
         self._token = r2.json().get("token", "")
         return MailboxAccount(email=self._address, account_id=self._token)
 
@@ -1570,14 +1497,12 @@ class DuckMailMailbox(BaseMailbox):
         code_pattern: str = None,
         **kwargs,
     ) -> str:
-        from datetime import datetime
         import re
+        from datetime import datetime
 
         seen = set(before_ids or [])
         exclude_codes = {
-            str(code).strip()
-            for code in (kwargs.get("exclude_codes") or set())
-            if str(code or "").strip()
+            str(code).strip() for code in (kwargs.get("exclude_codes") or set()) if str(code or "").strip()
         }
         otp_sent_at = kwargs.get("otp_sent_at")
 
@@ -1614,15 +1539,9 @@ class DuckMailMailbox(BaseMailbox):
                     seen.add(mid)
                     # 请求邮件详情获取完整 text
                     try:
-                        r2 = self._request(
-                            "GET", f"/messages/{mid}", token=account.account_id
-                        )
+                        r2 = self._request("GET", f"/messages/{mid}", token=account.account_id)
                         detail = r2.json()
-                        body = (
-                            str(detail.get("text") or "")
-                            + " "
-                            + str(detail.get("subject") or "")
-                        )
+                        body = str(detail.get("text") or "") + " " + str(detail.get("subject") or "")
                     except Exception:
                         detail = {}
                         body = str(msg.get("subject") or "")
@@ -1642,9 +1561,7 @@ class DuckMailMailbox(BaseMailbox):
                     )
                     if otp_sent_at and message_ts and message_ts < float(otp_sent_at):
                         continue
-                    body = re.sub(
-                        r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", "", body
-                    )
+                    body = re.sub(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", "", body)
                     code = self._safe_extract(body, code_pattern)
                     if code and code in exclude_codes:
                         continue
@@ -1768,9 +1685,7 @@ class MaliAPIMailbox(BaseMailbox):
             raise RuntimeError(f"MaliAPI 返回异常: {data}")
 
         email = str(data.get("address") or data.get("email") or "").strip()
-        temp_token = str(
-            data.get("tempToken") or data.get("temp_token") or data.get("token") or ""
-        ).strip()
+        temp_token = str(data.get("tempToken") or data.get("temp_token") or data.get("token") or "").strip()
         inbox_id = str(data.get("id") or "").strip()
         if not email:
             raise RuntimeError(f"MaliAPI 返回空邮箱: {data}")
@@ -1791,11 +1706,7 @@ class MaliAPIMailbox(BaseMailbox):
     def get_current_ids(self, account: MailboxAccount) -> set:
         self._ensure_api_key()
         try:
-            return {
-                str(message.get("id"))
-                for message in self._list_messages(account)
-                if message.get("id") is not None
-            }
+            return {str(message.get("id")) for message in self._list_messages(account) if message.get("id") is not None}
         except Exception:
             return set()
 
@@ -1835,9 +1746,7 @@ class MaliAPIMailbox(BaseMailbox):
                             str(message.get("snippet") or ""),
                         ]
                     ).strip()
-                    search_text = (
-                        self._yyds_decode_raw_content(search_text) or search_text
-                    )
+                    search_text = self._yyds_decode_raw_content(search_text) or search_text
                     search_text = re.sub(
                         r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
                         "",
@@ -1869,13 +1778,17 @@ class GPTMailMailbox(BaseMailbox):
         api_url: str = "https://mail.chatgpt.org.uk",
         api_key: str = "",
         domain: str = "",
+        mode: str = "api",
         proxy: str = None,
     ):
         self.api = (api_url or "https://mail.chatgpt.org.uk").rstrip("/")
         self.api_key = str(api_key or "").strip()
         self.domain = self._normalize_domain(domain)
+        self.mode = self._normalize_mode(mode)
+        self._proxy_url = proxy
         self.proxy = build_requests_proxy_config(proxy)
         self._email = None
+        self._automation_client = None
 
     @staticmethod
     def _normalize_domain(value: Any) -> str:
@@ -1885,12 +1798,41 @@ class GPTMailMailbox(BaseMailbox):
         return domain
 
     @staticmethod
+    def _normalize_mode(value: Any) -> str:
+        mode = str(value or "api").strip().lower() or "api"
+        if mode not in {"api", "automation"}:
+            raise RuntimeError(f"GPTMail 模式不支持: {mode}")
+        return mode
+
+    @staticmethod
     def _generate_local_part() -> str:
         return generate_human_like_email_local_part()
 
+    def _get_automation_client(self):
+        if self._automation_client is None:
+            from .gptmail_automation import GPTMailAutomationClient
+
+            self._automation_client = GPTMailAutomationClient(
+                api_base=self.api,
+                proxy_url=self._proxy_url,
+            )
+        return self._automation_client
+
+    @staticmethod
+    def _resolve_message_id(message: dict[str, Any]) -> str:
+        import hashlib
+
+        for key in ("id", "message_id", "uid", "mail_id", "_id"):
+            value = str(message.get(key) or "").strip()
+            if value:
+                return value
+
+        raw = json.dumps(message, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
     def _headers(self) -> dict[str, str]:
         headers = {"accept": "application/json"}
-        if self.api_key:
+        if self.mode == "api" and self.api_key:
             headers["X-API-Key"] = self.api_key
         return headers
 
@@ -1918,15 +1860,11 @@ class GPTMailMailbox(BaseMailbox):
             payload = response.json()
         except Exception as exc:
             preview = (response.text or "")[:200]
-            raise RuntimeError(
-                f"GPTMail API {path} 返回非 JSON: HTTP {response.status_code} {preview}"
-            ) from exc
+            raise RuntimeError(f"GPTMail API {path} 返回非 JSON: HTTP {response.status_code} {preview}") from exc
 
         if response.status_code >= 400:
             error = payload.get("error") if isinstance(payload, dict) else ""
-            message = str(
-                error or response.text or f"HTTP {response.status_code}"
-            ).strip()
+            message = str(error or response.text or f"HTTP {response.status_code}").strip()
             raise RuntimeError(f"GPTMail API {path} 失败: {message}")
 
         if isinstance(payload, dict) and payload.get("success") is False:
@@ -1938,9 +1876,10 @@ class GPTMailMailbox(BaseMailbox):
         return payload
 
     def _list_messages(self, email: str) -> list[dict]:
-        data = self._request_json(
-            "GET", "/api/emails", params={"email": email}, timeout=10
-        )
+        if self.mode == "automation":
+            return self._get_automation_client().get_emails(email)
+
+        data = self._request_json("GET", "/api/emails", params={"email": email}, timeout=10)
         if isinstance(data, dict):
             messages = data.get("emails", [])
         else:
@@ -1948,6 +1887,8 @@ class GPTMailMailbox(BaseMailbox):
         return [item for item in (messages or []) if isinstance(item, dict)]
 
     def _get_message_detail(self, message_id: str) -> dict[str, Any]:
+        if self.mode == "automation":
+            return {}
         data = self._request_json("GET", f"/api/email/{message_id}", timeout=10)
         return data if isinstance(data, dict) else {}
 
@@ -1961,33 +1902,36 @@ class GPTMailMailbox(BaseMailbox):
                 account_id=email,
                 extra={
                     "provider": "gptmail",
+                    "mode": self.mode,
                     "domain": self.domain,
                     "local_address": True,
                 },
             )
 
-        data = self._request_json("GET", "/api/generate-email")
-        if not isinstance(data, dict):
-            raise RuntimeError(f"GPTMail 返回异常: {data}")
-
-        email = str(data.get("email") or "").strip()
-        if not email:
-            raise RuntimeError(f"GPTMail 返回空邮箱: {data}")
+        if self.mode == "automation":
+            email = self._get_automation_client().generate_email()
+        else:
+            data = self._request_json("GET", "/api/generate-email")
+            if not isinstance(data, dict):
+                raise RuntimeError(f"GPTMail 返回异常: {data}")
+            email = str(data.get("email") or "").strip()
+            if not email:
+                raise RuntimeError(f"GPTMail 返回空邮箱: {data}")
 
         self._email = email
-        self._log(f"[GPTMail] 生成邮箱: {email}")
+        self._log(f"[GPTMail/{self.mode}] 生成邮箱: {email}")
         return MailboxAccount(
             email=email,
             account_id=email,
-            extra={"provider": "gptmail"},
+            extra={"provider": "gptmail", "mode": self.mode},
         )
 
     def get_current_ids(self, account: MailboxAccount) -> set:
         try:
             return {
-                str(message.get("id"))
+                self._resolve_message_id(message)
                 for message in self._list_messages(account.email)
-                if message.get("id") is not None
+                if self._resolve_message_id(message)
             }
         except Exception:
             return set()
@@ -2004,15 +1948,13 @@ class GPTMailMailbox(BaseMailbox):
         import re
 
         seen = {str(mid) for mid in (before_ids or set())}
-        exclude_codes = {
-            str(code) for code in (kwargs.get("exclude_codes") or set()) if code
-        }
+        exclude_codes = {str(code) for code in (kwargs.get("exclude_codes") or set()) if code}
 
         def poll_once() -> Optional[str]:
             try:
                 messages = self._list_messages(account.email)
                 for message in messages:
-                    message_id = str(message.get("id") or "").strip()
+                    message_id = self._resolve_message_id(message)
                     if not message_id or message_id in seen:
                         continue
                     seen.add(message_id)
@@ -2026,9 +1968,13 @@ class GPTMailMailbox(BaseMailbox):
                         [
                             str(message.get("subject") or ""),
                             str(message.get("from_address") or ""),
+                            str(message.get("text") or ""),
+                            str(message.get("html") or ""),
                             str(message.get("content") or ""),
                             str(message.get("html_content") or ""),
                             str(detail.get("subject") or ""),
+                            str(detail.get("text") or ""),
+                            str(detail.get("html") or ""),
                             str(detail.get("content") or ""),
                             str(detail.get("html_content") or ""),
                             str(detail.get("raw_headers") or ""),
@@ -2115,9 +2061,7 @@ class OpenTrashMailMailbox(BaseMailbox):
 
     def _require_api(self) -> None:
         if not self.api:
-            raise RuntimeError(
-                "OpenTrashMail 未配置 API URL，请检查 opentrashmail_api_url"
-            )
+            raise RuntimeError("OpenTrashMail 未配置 API URL，请检查 opentrashmail_api_url")
 
     def _build_email_path(self, email: str) -> str:
         from urllib.parse import quote
@@ -2157,9 +2101,7 @@ class OpenTrashMailMailbox(BaseMailbox):
             payload = response.json()
         except Exception as exc:
             preview = (response.text or "")[:200]
-            raise RuntimeError(
-                f"OpenTrashMail 收件箱返回非 JSON: HTTP {response.status_code} {preview}"
-            ) from exc
+            raise RuntimeError(f"OpenTrashMail 收件箱返回非 JSON: HTTP {response.status_code} {preview}") from exc
 
         if response.status_code >= 400:
             if isinstance(payload, dict) and payload.get("error"):
@@ -2198,9 +2140,7 @@ class OpenTrashMailMailbox(BaseMailbox):
             payload = response.json()
         except Exception as exc:
             preview = (response.text or "")[:200]
-            raise RuntimeError(
-                f"OpenTrashMail 邮件详情返回非 JSON: HTTP {response.status_code} {preview}"
-            ) from exc
+            raise RuntimeError(f"OpenTrashMail 邮件详情返回非 JSON: HTTP {response.status_code} {preview}") from exc
 
         if response.status_code >= 400:
             if isinstance(payload, dict) and payload.get("error"):
@@ -2228,9 +2168,7 @@ class OpenTrashMailMailbox(BaseMailbox):
         self._require_api()
         response = self._request("GET", "/api/random", timeout=15)
         if response.status_code >= 400:
-            raise RuntimeError(
-                f"OpenTrashMail 随机邮箱生成失败: HTTP {response.status_code}"
-            )
+            raise RuntimeError(f"OpenTrashMail 随机邮箱生成失败: HTTP {response.status_code}")
 
         email = self._parse_random_email(response.text)
         if not email:
@@ -2266,9 +2204,7 @@ class OpenTrashMailMailbox(BaseMailbox):
         import re
 
         seen = {str(mid) for mid in (before_ids or set())}
-        exclude_codes = {
-            str(code) for code in (kwargs.get("exclude_codes") or set()) if code
-        }
+        exclude_codes = {str(code) for code in (kwargs.get("exclude_codes") or set()) if code}
 
         def poll_once() -> Optional[str]:
             try:
@@ -2320,6 +2256,497 @@ class OpenTrashMailMailbox(BaseMailbox):
             poll_interval=3,
             poll_once=poll_once,
         )
+
+
+class CFRoutingMailbox(BaseMailbox):
+    """Cloudflare 邮件路由（catch-all 转发 + IMAP 轮询）"""
+
+    def __init__(
+        self,
+        domain: str = "",
+        imap_server: str = "",
+        imap_port: int | str = 993,
+        username: str = "",
+        password: str = "",
+        mailboxes: str = "INBOX",
+        poll_interval_seconds: float | str = 2,
+        proxy: str = None,
+    ):
+        self.domains = self._parse_domains(domain)
+        self.imap_server = str(imap_server or "").strip()
+        try:
+            self.imap_port = int(imap_port or 993)
+        except (TypeError, ValueError):
+            self.imap_port = 993
+        self.username = str(username or "").strip()
+        self.password = str(password or "").strip()
+        self.mailboxes = self._normalize_mailboxes(mailboxes)
+        self.poll_interval_seconds = self._normalize_poll_interval(poll_interval_seconds)
+        # 当前 provider 只使用 IMAP，暂未对 IMAP 连接做代理封装；保留参数以兼容统一工厂。
+        self.proxy = build_requests_proxy_config(proxy)
+
+    @staticmethod
+    def _normalize_domain(domain: Any) -> str:
+        value = str(domain or "").strip().lower()
+        if value.startswith("@"):
+            value = value[1:]
+        return value
+
+    @classmethod
+    def _parse_domains(cls, value: Any) -> list[str]:
+        if not value:
+            return []
+
+        items: list[Any]
+        if isinstance(value, (list, tuple, set)):
+            items = list(value)
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                items = parsed
+            else:
+                items = [part for chunk in text.splitlines() for part in chunk.split(",")]
+        else:
+            items = [value]
+
+        domains: list[str] = []
+        seen = set()
+        for item in items:
+            domain = cls._normalize_domain(item)
+            if not domain or domain in seen:
+                continue
+            seen.add(domain)
+            domains.append(domain)
+        return domains
+
+    @staticmethod
+    def _normalize_mailboxes(value: Any) -> list[str]:
+        if isinstance(value, (list, tuple, set)):
+            items = [str(item or "").strip() for item in value]
+        else:
+            raw = str(value or "INBOX").strip() or "INBOX"
+            items = [item.strip() for item in raw.split(",")]
+
+        result = []
+        seen = set()
+        for item in items:
+            if not item:
+                continue
+            lowered = item.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            result.append(item)
+        return result or ["INBOX"]
+
+    @staticmethod
+    def _normalize_poll_interval(value: Any) -> float:
+        try:
+            resolved = float(value)
+        except (TypeError, ValueError):
+            resolved = 2.0
+        return max(resolved, 0.5)
+
+    @staticmethod
+    def _generate_local_part() -> str:
+        import string
+
+        prefix = "".join(random.choices(string.ascii_lowercase, k=6))
+        suffix = "".join(random.choices(string.digits, k=4))
+        return f"{prefix}{suffix}"
+
+    def _ensure_configured(self) -> None:
+        if not self.domains:
+            raise RuntimeError("Cloudflare 邮件路由未配置域名：请设置 cfrouting_domain")
+        if not self.imap_server:
+            raise RuntimeError("Cloudflare 邮件路由未配置 IMAP 服务器：请设置 cfrouting_imap_server")
+        if not self.username:
+            raise RuntimeError("Cloudflare 邮件路由未配置 IMAP 用户名：请设置 cfrouting_username")
+        if not self.password:
+            raise RuntimeError("Cloudflare 邮件路由未配置 IMAP 密码：请设置 cfrouting_password")
+
+    def _pick_domain(self) -> str:
+        self._ensure_configured()
+        return random.choice(self.domains)
+
+    def get_email(self) -> MailboxAccount:
+        domain = self._pick_domain()
+        email = f"{self._generate_local_part()}@{domain}"
+        self._log(f"[CFRouting] 本次使用邮箱: {email}")
+        return MailboxAccount(
+            email=email,
+            account_id=email,
+            extra={
+                "provider": "cfrouting",
+                "route_domain": domain,
+                "imap_username": self.username,
+            },
+        )
+
+    def _open_imap(self):
+        import imaplib
+
+        self._ensure_configured()
+        conn = imaplib.IMAP4_SSL(self.imap_server, self.imap_port, timeout=30)
+        conn.login(self.username, self.password)
+        return conn
+
+    def _select_mailbox(self, imap_conn, mailbox: str) -> bool:
+        target = str(mailbox or "").strip() or "INBOX"
+        try:
+            status, _ = imap_conn.select(target, readonly=True)
+            if status == "OK":
+                return True
+        except Exception:
+            pass
+
+        try:
+            status, _ = imap_conn.select(f'"{target}"', readonly=True)
+            return status == "OK"
+        except Exception:
+            return False
+
+    def _decode_header_value(self, value: str) -> str:
+        from email.header import decode_header
+
+        if not value:
+            return ""
+        parts = decode_header(value)
+        decoded = []
+        for part, charset in parts:
+            if isinstance(part, bytes):
+                try:
+                    decoded.append(part.decode(charset or "utf-8", errors="ignore"))
+                except Exception:
+                    decoded.append(part.decode("utf-8", errors="ignore"))
+            else:
+                decoded.append(str(part))
+        return "".join(decoded)
+
+    def _extract_message_text(self, message) -> str:
+        subject = self._decode_header_value(message.get("Subject", ""))
+        body_chunks = []
+        if message.is_multipart():
+            for part in message.walk():
+                if part.get_content_maintype() == "multipart":
+                    continue
+                content_type = part.get_content_type()
+                if content_type not in ("text/plain", "text/html"):
+                    continue
+                payload = part.get_payload(decode=True)
+                if payload is None:
+                    continue
+                charset = part.get_content_charset() or "utf-8"
+                try:
+                    body_chunks.append(payload.decode(charset, errors="ignore"))
+                except Exception:
+                    body_chunks.append(payload.decode("utf-8", errors="ignore"))
+        else:
+            payload = message.get_payload(decode=True)
+            if payload is None:
+                payload = message.get_payload()
+            if isinstance(payload, bytes):
+                try:
+                    body_chunks.append(payload.decode("utf-8", errors="ignore"))
+                except Exception:
+                    body_chunks.append(payload.decode("latin1", errors="ignore"))
+            elif payload:
+                body_chunks.append(str(payload))
+
+        combined = (subject + " " + " ".join(body_chunks)).strip()
+        return self._decode_raw_content(combined)
+
+    def _message_matches_alias(self, message, alias: str) -> bool:
+        target = str(alias or "").strip().lower()
+        if not target:
+            return True
+
+        fragments = []
+        for header_name, value in message.items():
+            decoded = self._decode_header_value(value)
+            if decoded:
+                fragments.append(f"{header_name}: {decoded}")
+
+        haystack = "\n".join(fragments).lower()
+        return target in haystack or f"<{target}>" in haystack or f"for <{target}>" in haystack
+
+    def _fetch_recent_message_uids(self, imap_conn, mailbox: str) -> list[str]:
+        if not self._select_mailbox(imap_conn, mailbox):
+            return []
+
+        status, data = imap_conn.uid("search", None, "ALL")
+        if status != "OK":
+            return []
+        raw_ids = data[0].split() if data and data[0] else []
+        if len(raw_ids) > 80:
+            raw_ids = raw_ids[-80:]
+        result = []
+        for raw_uid in raw_ids:
+            if isinstance(raw_uid, bytes):
+                result.append(raw_uid.decode("utf-8", errors="ignore"))
+            else:
+                result.append(str(raw_uid))
+        return [uid for uid in result if uid]
+
+    @staticmethod
+    def _supports_idle(imap_conn) -> bool:
+        capabilities = getattr(imap_conn, "capabilities", ()) or ()
+        normalized = set()
+        for item in capabilities:
+            if isinstance(item, bytes):
+                normalized.add(item.decode("utf-8", errors="ignore").upper())
+            else:
+                normalized.add(str(item).upper())
+        return "IDLE" in normalized
+
+    @staticmethod
+    def _clear_untagged_responses(imap_conn, *names: str) -> None:
+        responses = getattr(imap_conn, "untagged_responses", None)
+        if not isinstance(responses, dict):
+            return
+        for name in names:
+            responses.pop(str(name or "").upper(), None)
+
+    def _idle_wait_for_mailbox_event(
+        self,
+        imap_conn,
+        mailbox: str,
+        timeout: float,
+    ) -> bool:
+        import select
+
+        idle_timeout = max(float(timeout or 0), 0.0)
+        if idle_timeout <= 0 or not self._supports_idle(imap_conn):
+            return False
+        if not self._select_mailbox(imap_conn, mailbox):
+            return False
+
+        self._clear_untagged_responses(
+            imap_conn,
+            "EXISTS",
+            "RECENT",
+            "FETCH",
+            "EXPUNGE",
+        )
+
+        tag = imap_conn._new_tag()
+        idle_started = False
+        try:
+            imap_conn.send(tag + b" IDLE\r\n")
+            idle_started = True
+            continuation = imap_conn._get_response()
+            if continuation is not None:
+                return False
+
+            deadline = time.monotonic() + idle_timeout
+            while time.monotonic() < deadline:
+                self._checkpoint()
+                remaining = deadline - time.monotonic()
+                wait_timeout = min(0.25, max(remaining, 0.0))
+                if wait_timeout <= 0:
+                    break
+
+                sock = getattr(imap_conn, "sock", None)
+                if sock is None:
+                    break
+                readable, _, _ = select.select([sock], [], [], wait_timeout)
+                if not readable:
+                    continue
+
+                response = imap_conn._get_response()
+                if response is None:
+                    continue
+
+                for name in ("EXISTS", "RECENT", "FETCH"):
+                    if getattr(imap_conn, "untagged_responses", {}).get(name):
+                        self._log(f"[CFRouting] IDLE 收到邮件事件: mailbox={mailbox} event={name}")
+                        return True
+            return False
+        except Exception:
+            return False
+        finally:
+            if idle_started:
+                try:
+                    imap_conn.send(b"DONE\r\n")
+                    imap_conn._get_tagged_response(tag)
+                except Exception:
+                    pass
+
+    def _scan_for_code(
+        self,
+        *,
+        imap_conn,
+        account: MailboxAccount,
+        seen: set[str],
+        keyword_lower: str,
+        alias: str,
+        code_pattern: str | None,
+        exclude_codes: set[str],
+    ) -> Optional[str]:
+        from email import message_from_bytes
+        from email.policy import default as email_default_policy
+
+        fallback_candidates = []
+        for mailbox in self.mailboxes:
+            for uid in self._fetch_recent_message_uids(imap_conn, mailbox):
+                message_id = f"{mailbox}:{uid}"
+                if not uid or message_id in seen:
+                    continue
+                seen.add(message_id)
+
+                status, msg_data = imap_conn.uid("fetch", uid, "(RFC822)")
+                if status != "OK":
+                    continue
+
+                raw = None
+                for item in msg_data or []:
+                    if isinstance(item, tuple) and item[1]:
+                        raw = item[1]
+                        break
+                if not raw:
+                    continue
+
+                message = message_from_bytes(raw, policy=email_default_policy)
+                text = self._extract_message_text(message)
+                text_lower = text.lower()
+                alias_matched = self._message_matches_alias(message, alias)
+                if not alias_matched and alias and alias in text_lower:
+                    alias_matched = True
+
+                if keyword_lower and keyword_lower not in text_lower:
+                    continue
+
+                code = self._safe_extract(text, code_pattern)
+                if code and code in exclude_codes:
+                    continue
+                if not code:
+                    continue
+                if alias_matched:
+                    self._log(f"[CFRouting] 命中验证码: alias={account.email} mailbox={mailbox} uid={uid} code={code}")
+                    return code
+                fallback_candidates.append(
+                    {
+                        "code": code,
+                        "mailbox": mailbox,
+                        "uid": uid,
+                    }
+                )
+
+        if fallback_candidates:
+            distinct_codes = {
+                str(item.get("code") or "").strip()
+                for item in fallback_candidates
+                if str(item.get("code") or "").strip()
+            }
+            if len(distinct_codes) == 1:
+                candidate = fallback_candidates[-1]
+                code = str(candidate.get("code") or "").strip()
+                self._log(
+                    "[CFRouting] 邮件头未保留原始收件人，按新增邮件回退命中验证码: "
+                    f"alias={account.email} mailbox={candidate.get('mailbox')} "
+                    f"uid={candidate.get('uid')} code={code}"
+                )
+                return code
+            self._log(
+                "[CFRouting] 新增邮件里发现多个不同验证码，但都未命中原始收件人，"
+                f"本轮跳过以避免误用: alias={account.email} count={len(fallback_candidates)}"
+            )
+        return None
+
+    def get_current_ids(self, account: MailboxAccount) -> set:
+        imap_conn = None
+        try:
+            imap_conn = self._open_imap()
+            current_ids = set()
+            for mailbox in self.mailboxes:
+                for uid in self._fetch_recent_message_uids(imap_conn, mailbox):
+                    current_ids.add(f"{mailbox}:{uid}")
+            return current_ids
+        except Exception:
+            return set()
+        finally:
+            try:
+                if imap_conn:
+                    imap_conn.logout()
+            except Exception:
+                pass
+
+    def wait_for_code(
+        self,
+        account: MailboxAccount,
+        keyword: str = "",
+        timeout: int = 120,
+        before_ids: set = None,
+        code_pattern: str = None,
+        **kwargs,
+    ) -> str:
+        seen = {str(mid) for mid in (before_ids or set())}
+        exclude_codes = {
+            str(code).strip() for code in (kwargs.get("exclude_codes") or set()) if str(code or "").strip()
+        }
+        keyword_lower = str(keyword or "").strip().lower()
+        alias = str(account.email or "").strip().lower()
+        timeout_seconds = max(int(timeout or 0), 1)
+        deadline = time.monotonic() + timeout_seconds
+        imap_conn = None
+        try:
+            imap_conn = self._open_imap()
+            idle_enabled = self._supports_idle(imap_conn)
+            self._log(
+                "[CFRouting] 开始等待验证码: "
+                f"alias={account.email} idle={'on' if idle_enabled else 'off'} "
+                f"window={self.poll_interval_seconds}s"
+            )
+
+            while time.monotonic() < deadline:
+                self._checkpoint()
+                code = self._scan_for_code(
+                    imap_conn=imap_conn,
+                    account=account,
+                    seen=seen,
+                    keyword_lower=keyword_lower,
+                    alias=alias,
+                    code_pattern=code_pattern,
+                    exclude_codes=exclude_codes,
+                )
+                if code:
+                    return code
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+
+                wait_window = min(self.poll_interval_seconds, remaining)
+                if idle_enabled:
+                    notified = False
+                    for mailbox in self.mailboxes:
+                        if self._idle_wait_for_mailbox_event(
+                            imap_conn,
+                            mailbox,
+                            wait_window,
+                        ):
+                            notified = True
+                            break
+                    if not notified:
+                        self._log("[CFRouting] IDLE 等待窗口内未收到事件，立即重扫")
+                    continue
+
+                self._sleep_with_checkpoint(wait_window)
+
+            self._checkpoint()
+            raise TimeoutError(f"Cloudflare 邮件路由等待验证码超时 ({timeout}s)")
+        finally:
+            try:
+                if imap_conn:
+                    imap_conn.logout()
+            except Exception:
+                pass
 
 
 class CFWorkerMailbox(BaseMailbox):
@@ -2381,9 +2808,7 @@ class CFWorkerMailbox(BaseMailbox):
         except Exception:
             body = (response.text or "").strip()
             snippet = body[:200] if body else "<empty>"
-            raise RuntimeError(
-                f"CF Worker {action} 返回非 JSON 响应: HTTP {response.status_code}, body={snippet}"
-            )
+            raise RuntimeError(f"CF Worker {action} 返回非 JSON 响应: HTTP {response.status_code}, body={snippet}")
 
     def _request_json(
         self,
@@ -2411,19 +2836,13 @@ class CFWorkerMailbox(BaseMailbox):
 
         if response.status_code >= 400:
             if "private site password" in body.lower():
-                raise RuntimeError(
-                    "CFWorker API 需要私有站点密码，请配置 cfworker_custom_auth"
-                )
-            raise RuntimeError(
-                f"CFWorker API {path} 失败: HTTP {response.status_code} {preview}"
-            )
+                raise RuntimeError("CFWorker API 需要私有站点密码，请配置 cfworker_custom_auth")
+            raise RuntimeError(f"CFWorker API {path} 失败: HTTP {response.status_code} {preview}")
 
         try:
             return response.json()
         except Exception as e:
-            raise RuntimeError(
-                f"CFWorker API {path} 返回非 JSON: HTTP {response.status_code} {preview}"
-            ) from e
+            raise RuntimeError(f"CFWorker API {path} 返回非 JSON: HTTP {response.status_code} {preview}") from e
 
     def _generate_local_part(self) -> str:
         return generate_human_like_email_local_part()
@@ -2469,9 +2888,7 @@ class CFWorkerMailbox(BaseMailbox):
             if isinstance(parsed, list):
                 items = parsed
             else:
-                items = [
-                    part for chunk in text.splitlines() for part in chunk.split(",")
-                ]
+                items = [part for chunk in text.splitlines() for part in chunk.split(",")]
         else:
             items = [value]
 
@@ -2506,8 +2923,9 @@ class CFWorkerMailbox(BaseMailbox):
         sub_parts: list[str] = []
         if self.random_name_subdomain:
             try:
-                import names
                 import random
+
+                import names
 
                 name_func = random.choice([names.get_first_name, names.get_last_name])
                 sub_parts.append(name_func().lower().replace(" ", ""))
@@ -2530,19 +2948,13 @@ class CFWorkerMailbox(BaseMailbox):
         if selected_domain:
             payload["domain"] = selected_domain
             self._log(f"[CFWorker] 本次使用域名: {selected_domain}")
-        data = self._request_json(
-            "POST", "/admin/new_address", payload=payload, timeout=15
-        )
+        data = self._request_json("POST", "/admin/new_address", payload=payload, timeout=15)
         email = data.get("email", data.get("address", ""))
         token = data.get("token", data.get("jwt", ""))
         if not email or not token:
-            raise RuntimeError(
-                f"CFWorker API /admin/new_address 返回缺少 email/jwt: {data}"
-            )
+            raise RuntimeError(f"CFWorker API /admin/new_address 返回缺少 email/jwt: {data}")
         self._token = token
-        print(
-            f"[CFWorker] 生成邮箱: {email} token={token[:40] if token else 'NONE'}..."
-        )
+        print(f"[CFWorker] 生成邮箱: {email} token={token[:40] if token else 'NONE'}...")
         return MailboxAccount(
             email=email,
             account_id=token,
@@ -2600,9 +3012,7 @@ class CFWorkerMailbox(BaseMailbox):
                                 .timestamp()
                             )
                             if mail_ts < otp_cutoff:
-                                self._log(
-                                    f"[CFWorker] \u8df3\u8fc7\u65e7\u90ae\u4ef6 id={mid} created_at={created_at}"
-                                )
+                                self._log(f"[CFWorker] \u8df3\u8fc7\u65e7\u90ae\u4ef6 id={mid} created_at={created_at}")
                                 continue
                         except Exception:
                             pass
@@ -2625,14 +3035,10 @@ class CFWorkerMailbox(BaseMailbox):
 
                     code = self._safe_extract(search_text, code_pattern)
                     if code and code in exclude_codes:
-                        self._log(
-                            f"[CFWorker] \u8df3\u8fc7\u5df2\u7528\u9a8c\u8bc1\u7801 id={mid} created_at={created_at} code={code}"
-                        )
+                        self._log(f"[CFWorker] 跳过已用验证码 id={mid} created_at={created_at} code={code}")
                         continue
                     if code:
-                        self._log(
-                            f"[CFWorker] \u547d\u4e2d\u65b0\u9a8c\u8bc1\u7801 id={mid} created_at={created_at} code={code}"
-                        )
+                        self._log(f"[CFWorker] 命中新验证码 id={mid} created_at={created_at} code={code}")
                         return code
             except Exception:
                 pass
@@ -2649,9 +3055,7 @@ class CFWorkerMailbox(BaseMailbox):
 class MoeMailMailbox(BaseMailbox):
     """MoeMail (sall.cc) 邮箱服务 - 自动注册账号并生成临时邮箱"""
 
-    def __init__(
-        self, api_url: str = "https://sall.cc", api_key: str = "", proxy: str = None
-    ):
+    def __init__(self, api_url: str = "https://sall.cc", api_key: str = "", proxy: str = None):
         self.api = api_url.rstrip("/")
         self.api_key = str(api_key or "").strip()
         self.proxy = build_requests_proxy_config(proxy)
@@ -2664,14 +3068,17 @@ class MoeMailMailbox(BaseMailbox):
         return {"X-API-Key": self.api_key}
 
     def _register_and_login(self) -> str:
-        import requests, random, string
+        import string
+
+        import requests
 
         s = requests.Session()
         s.proxies = self.proxy
-        ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
-        s.headers.update(
-            {"user-agent": ua, "origin": self.api, "referer": f"{self.api}/zh-CN/login"}
+        ua = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
         )
+        s.headers.update({"user-agent": ua, "origin": self.api, "referer": f"{self.api}/zh-CN/login"})
         s.headers.update(self._api_headers())
         # 注册
         username = "".join(random.choices(string.ascii_lowercase + string.digits, k=12))
@@ -2698,7 +3105,7 @@ class MoeMailMailbox(BaseMailbox):
         for cookie in s.cookies:
             if "session-token" in cookie.name:
                 self._session_token = cookie.value
-                print(f"[MoeMail] 登录成功")
+                print("[MoeMail] 登录成功")
                 return cookie.value
         print(f"[MoeMail] 登录失败，cookies: {[c.name for c in s.cookies]}")
         return ""
@@ -2707,20 +3114,14 @@ class MoeMailMailbox(BaseMailbox):
         # 每次调用都重新注册新账号，保证邮箱唯一
         self._session_token = None
         self._register_and_login()
-        import random, string
+        import string
 
         name = "".join(random.choices(string.ascii_letters + string.digits, k=8))
         # 获取可用域名列表，随机选一个
         domain = "sall.cc"
         try:
-            cfg_r = self._session.get(
-                f"{self.api}/api/config", headers=self._api_headers(), timeout=10
-            )
-            domains = [
-                d.strip()
-                for d in cfg_r.json().get("emailDomains", "sall.cc").split(",")
-                if d.strip()
-            ]
+            cfg_r = self._session.get(f"{self.api}/api/config", headers=self._api_headers(), timeout=10)
+            domains = [d.strip() for d in cfg_r.json().get("emailDomains", "sall.cc").split(",") if d.strip()]
             if domains:
                 domain = random.choice(domains)
         except Exception:
@@ -2734,9 +3135,7 @@ class MoeMailMailbox(BaseMailbox):
         data = r.json()
         self._email = data.get("email", data.get("address", ""))
         email_id = data.get("id", "")
-        print(
-            f"[MoeMail] 生成邮箱: {self._email} id={email_id} domain={domain} status={r.status_code}"
-        )
+        print(f"[MoeMail] 生成邮箱: {self._email} id={email_id} domain={domain} status={r.status_code}")
         if not email_id:
             print(f"[MoeMail] 生成失败: {data}")
         if email_id:
@@ -2781,19 +3180,11 @@ class MoeMailMailbox(BaseMailbox):
                         continue
                     seen.add(mid)
                     body = (
-                        str(
-                            msg.get("content")
-                            or msg.get("text")
-                            or msg.get("body")
-                            or msg.get("html")
-                            or ""
-                        )
+                        str(msg.get("content") or msg.get("text") or msg.get("body") or msg.get("html") or "")
                         + " "
                         + str(msg.get("subject") or "")
                     )
-                    body = re.sub(
-                        r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", "", body
-                    )
+                    body = re.sub(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", "", body)
                     code = self._safe_extract(body, code_pattern)
                     if code:
                         return code
@@ -2821,9 +3212,7 @@ class LuckMailMailbox(BaseMailbox):
         proxy: str = None,
     ):
         if not base_url or not api_key:
-            raise RuntimeError(
-                "LuckMail 未配置：请在全局设置中填写 luckmail_base_url 和 luckmail_api_key"
-            )
+            raise RuntimeError("LuckMail 未配置：请在全局设置中填写 luckmail_base_url 和 luckmail_api_key")
         from .luckmail import LuckMailClient
 
         self._client = LuckMailClient(
@@ -2839,11 +3228,7 @@ class LuckMailMailbox(BaseMailbox):
         self._email = None
 
     def _use_purchase_mode(self, account: MailboxAccount = None) -> bool:
-        if (
-            account
-            and account.account_id
-            and str(account.account_id).startswith("tok_")
-        ):
+        if account and account.account_id and str(account.account_id).startswith("tok_"):
             return True
         if self._token:
             return True
@@ -2924,7 +3309,8 @@ class LuckMailMailbox(BaseMailbox):
         if self._use_purchase_mode():
             self._log(
                 f"[LuckMail] 分支: ChatGPT + LuckMail -> 购买邮箱接口 "
-                f"(project_code={self._project_code}, email_type={self._email_type or '-'}, domain={self._domain or '-'})"
+                f"(project_code={self._project_code}, "
+                f"email_type={self._email_type or '-'}, domain={self._domain or '-'})"
             )
             try:
                 result = self._client.user.purchase_emails(
@@ -3027,10 +3413,7 @@ class LuckMailMailbox(BaseMailbox):
                         raise TimeoutError(f"LuckMail 等待验证码失败: {e}") from e
 
                     last_status = str(code_result.status or "pending")
-                    if (
-                        code_result.status == "success"
-                        and code_result.verification_code
-                    ):
+                    if code_result.status == "success" and code_result.verification_code:
                         code = code_result.verification_code
                         self._log(f"[LuckMail] 收到验证码: {code}")
                         return code
@@ -3041,25 +3424,19 @@ class LuckMailMailbox(BaseMailbox):
                 raise
 
             self._cancel_order_silently(order_no)
-            raise TimeoutError(
-                f"LuckMail 等待验证码超时 ({timeout}s)，最终状态: {last_status}"
-            )
+            raise TimeoutError(f"LuckMail 等待验证码超时 ({timeout}s)，最终状态: {last_status}")
 
         token = self._resolve_token(account)
         if not token:
             raise RuntimeError("LuckMail 未找到已购邮箱 Token，无法等待验证码")
         self._log("[LuckMail] 等验证码分支: 已购邮箱 Token 收码")
 
-        exclude_codes = {
-            str(code) for code in (kwargs.get("exclude_codes") or set()) if code
-        }
+        exclude_codes = {str(code) for code in (kwargs.get("exclude_codes") or set()) if code}
         seen_message_ids = {str(mid) for mid in (before_ids or set()) if mid}
         if before_ids is None:
             seen_message_ids = self.get_current_ids(account)
             if seen_message_ids:
-                self._log(
-                    f"[LuckMail] 已建立旧邮件基线，先跳过 {len(seen_message_ids)} 封历史邮件"
-                )
+                self._log(f"[LuckMail] 已建立旧邮件基线，先跳过 {len(seen_message_ids)} 封历史邮件")
 
         saw_new_mail = False
 
@@ -3090,17 +3467,13 @@ class LuckMailMailbox(BaseMailbox):
                 )
                 code = self._safe_extract(body, code_pattern)
                 if code and code in exclude_codes:
-                    self._log(
-                        f"[LuckMail] 跳过已使用验证码 message_id={message_id or '-'} code={code}"
-                    )
+                    self._log(f"[LuckMail] 跳过已使用验证码 message_id={message_id or '-'} code={code}")
                     continue
                 if code:
                     self._log(f"[LuckMail] 收到验证码: {code}")
                     return code
 
-            self._log(
-                f"[LuckMail] 轮询中... 新邮件: {'是' if found_new_mail else '否'}"
-            )
+            self._log(f"[LuckMail] 轮询中... 新邮件: {'是' if found_new_mail else '否'}")
 
             if found_new_mail:
                 self._log("[LuckMail] 新邮件还不是可用验证码，继续等下一封...")
@@ -3110,21 +3483,262 @@ class LuckMailMailbox(BaseMailbox):
             timeout=timeout,
             poll_interval=3,
             poll_once=poll_once,
-            timeout_message=(
-                f"LuckMail 等待验证码超时 ({timeout}s)，最终状态: "
-                f"has_new_mail={saw_new_mail}"
-            ),
+            timeout_message=(f"LuckMail 等待验证码超时 ({timeout}s)，最终状态: has_new_mail={saw_new_mail}"),
+        )
+
+
+class OutlookMailboxBackend(ABC):
+    """Outlook 收信后端策略。"""
+
+    backend_name: str = ""
+
+    def __init__(self, mailbox: "OutlookMailbox"):
+        self.mailbox = mailbox
+
+    @abstractmethod
+    def get_current_ids(self, account: MailboxAccount) -> set: ...
+
+    @abstractmethod
+    def wait_for_code(
+        self,
+        account: MailboxAccount,
+        keyword: str = "",
+        timeout: int = 120,
+        before_ids: set | None = None,
+        code_pattern: str | None = None,
+        **kwargs,
+    ) -> str: ...
+
+
+class OutlookImapMailboxBackend(OutlookMailboxBackend):
+    backend_name = "imap"
+
+    def get_current_ids(self, account: MailboxAccount) -> set:
+        imap_conn = None
+        try:
+            imap_conn = self.mailbox._open_imap(account)
+            seen: set[str] = set()
+            for folder in self.mailbox._imap_folder_names:
+                status, _ = imap_conn.select(folder, readonly=True)
+                if status != "OK":
+                    continue
+                status, data = imap_conn.uid("search", None, "ALL")
+                if status != "OK":
+                    continue
+                ids = data[0].split() if data and data[0] else []
+                for uid in ids[-100:]:
+                    uid_str = uid.decode("utf-8", errors="ignore") if isinstance(uid, bytes) else str(uid)
+                    if uid_str:
+                        seen.add(f"{folder}:{uid_str}")
+            return seen
+        finally:
+            try:
+                if imap_conn:
+                    imap_conn.logout()
+            except Exception:
+                pass
+
+    def wait_for_code(
+        self,
+        account: MailboxAccount,
+        keyword: str = "",
+        timeout: int = 120,
+        before_ids: set | None = None,
+        code_pattern: str | None = None,
+        **kwargs,
+    ) -> str:
+        from email import message_from_bytes
+        from email.policy import default as email_default_policy
+
+        seen = {str(mid) for mid in (before_ids or set())}
+        exclude_codes = {
+            str(code).strip() for code in (kwargs.get("exclude_codes") or set()) if str(code or "").strip()
+        }
+        keyword_lower = str(keyword or "").strip().lower()
+
+        def poll_once() -> Optional[str]:
+            for folder in self.mailbox._imap_folder_names:
+                imap_conn = None
+                try:
+                    self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} 开始轮询")
+                    imap_conn = self.mailbox._open_imap(account)
+                    self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} IMAP 登录成功")
+                    status, _ = imap_conn.select(folder, readonly=True)
+                    if status != "OK":
+                        self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} select 失败: status={status}")
+                        continue
+                    status, data = imap_conn.uid("search", None, "ALL")
+                    if status != "OK":
+                        self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} search 失败: status={status}")
+                        continue
+                    ids = data[0].split() if data and data[0] else []
+                    if len(ids) > 50:
+                        ids = ids[-50:]
+                    new_uids = []
+                    for uid in ids:
+                        uid_str = uid.decode("utf-8", errors="ignore") if isinstance(uid, bytes) else str(uid)
+                        seen_key = f"{folder}:{uid_str}"
+                        if not uid_str or seen_key in seen:
+                            continue
+                        seen.add(seen_key)
+                        new_uids.append(uid)
+                    self.mailbox._log(
+                        f"[微软邮箱][IMAP] folder={folder} uid_total={len(ids)} new_uid_count={len(new_uids)}"
+                    )
+                    for uid in new_uids:
+                        status, msg_data = imap_conn.uid("fetch", uid, "(RFC822)")
+                        if status != "OK":
+                            self.mailbox._log(
+                                f"[微软邮箱][IMAP] folder={folder} fetch 失败: uid={uid!r} status={status}"
+                            )
+                            continue
+                        raw = None
+                        for item in msg_data or []:
+                            if isinstance(item, tuple) and item[1]:
+                                raw = item[1]
+                                break
+                        if not raw:
+                            self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} fetch 空响应: uid={uid!r}")
+                            continue
+                        msg = message_from_bytes(raw, policy=email_default_policy)
+                        subject = self.mailbox._decode_header_value(msg.get("Subject", ""))
+                        text = self.mailbox._extract_message_text(msg)
+                        self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} 命中新邮件 subject={subject or '-'}")
+                        if keyword_lower and keyword_lower not in text.lower():
+                            self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} 跳过关键字不匹配邮件")
+                            continue
+                        code = self.mailbox._safe_extract(text, code_pattern)
+                        if not code:
+                            self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} 未提取到验证码")
+                            continue
+                        if code in exclude_codes:
+                            self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} 跳过已尝试验证码: {code}")
+                            continue
+                        self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} 验证码提取成功: {code}")
+                        return code
+                except Exception as exc:
+                    self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} IMAP 查询异常: {exc}")
+                    continue
+                finally:
+                    try:
+                        if imap_conn:
+                            imap_conn.logout()
+                    except Exception:
+                        pass
+            return None
+
+        return self.mailbox._run_polling_wait(
+            timeout=timeout,
+            poll_interval=5,
+            poll_once=poll_once,
+        )
+
+
+class OutlookGraphMailboxBackend(OutlookMailboxBackend):
+    backend_name = "graph"
+
+    def get_current_ids(self, account: MailboxAccount) -> set:
+        access_token = self.mailbox._get_oauth_access_token(
+            account,
+            preferred_backend=self.backend_name,
+        )
+        seen: set[str] = set()
+        for folder in self.mailbox._graph_folder_names:
+            messages = self.mailbox._graph_list_messages(
+                access_token=access_token,
+                folder=folder,
+            )
+            for message in messages:
+                message_id = str(message.get("id") or "").strip()
+                if message_id:
+                    seen.add(f"{folder}:{message_id}")
+        return seen
+
+    def wait_for_code(
+        self,
+        account: MailboxAccount,
+        keyword: str = "",
+        timeout: int = 120,
+        before_ids: set | None = None,
+        code_pattern: str | None = None,
+        **kwargs,
+    ) -> str:
+        seen = {str(mid) for mid in (before_ids or set())}
+        exclude_codes = {
+            str(code).strip() for code in (kwargs.get("exclude_codes") or set()) if str(code or "").strip()
+        }
+        keyword_lower = str(keyword or "").strip().lower()
+
+        def poll_once() -> Optional[str]:
+            access_token = self.mailbox._get_oauth_access_token(
+                account,
+                preferred_backend=self.backend_name,
+            )
+            for folder in self.mailbox._graph_folder_names:
+                try:
+                    self.mailbox._log(f"[微软邮箱][Graph] folder={folder} 开始轮询")
+                    messages = self.mailbox._graph_list_messages(
+                        access_token=access_token,
+                        folder=folder,
+                    )
+                    new_messages = []
+                    for message in messages:
+                        message_id = str(message.get("id") or "").strip()
+                        seen_key = f"{folder}:{message_id}"
+                        if not message_id or seen_key in seen:
+                            continue
+                        seen.add(seen_key)
+                        new_messages.append(message)
+                    self.mailbox._log(
+                        f"[微软邮箱][Graph] folder={folder} message_total={len(messages)} new_count={len(new_messages)}"
+                    )
+                    for message in new_messages:
+                        subject = str(message.get("subject") or "").strip()
+                        text = self.mailbox._graph_message_text(message)
+                        self.mailbox._log(f"[微软邮箱][Graph] folder={folder} 命中新邮件 subject={subject or '-'}")
+                        if keyword_lower and keyword_lower not in text.lower():
+                            self.mailbox._log(f"[微软邮箱][Graph] folder={folder} 跳过关键字不匹配邮件")
+                            continue
+                        code = self.mailbox._safe_extract(text, code_pattern)
+                        if not code:
+                            message_id = str(message.get("id") or "").strip()
+                            if message_id:
+                                detail = self.mailbox._graph_get_message(
+                                    access_token=access_token,
+                                    message_id=message_id,
+                                )
+                                text = self.mailbox._graph_message_text(detail)
+                                code = self.mailbox._safe_extract(text, code_pattern)
+                        if not code:
+                            self.mailbox._log(f"[微软邮箱][Graph] folder={folder} 未提取到验证码")
+                            continue
+                        if code in exclude_codes:
+                            self.mailbox._log(f"[微软邮箱][Graph] folder={folder} 跳过已尝试验证码: {code}")
+                            continue
+                        self.mailbox._log(f"[微软邮箱][Graph] folder={folder} 验证码提取成功: {code}")
+                        return code
+                except Exception as exc:
+                    self.mailbox._log(f"[微软邮箱][Graph] folder={folder} 查询异常: {exc}")
+                    continue
+            return None
+
+        return self.mailbox._run_polling_wait(
+            timeout=timeout,
+            poll_interval=5,
+            poll_once=poll_once,
         )
 
 
 class OutlookMailbox(BaseMailbox):
-    """Outlook 本地账号池（IMAP / OAuth）"""
+    """微软邮箱（Outlook / Hotmail）本地账号池（Graph / IMAP 策略）"""
 
     def __init__(
         self,
         imap_server: str = "",
         imap_port: int | str = 993,
         token_endpoint: str = "",
+        backend: str = "graph",
+        graph_api_base: str = "",
         proxy: str = None,
     ):
         self._lock = threading.Lock()
@@ -3144,18 +3758,30 @@ class OutlookMailbox(BaseMailbox):
                 )
             except Exception:
                 self._imap_servers.extend(["outlook.live.com", "outlook.office365.com"])
-        self._imap_servers = [
-            host for host in self._imap_servers if isinstance(host, str) and host
-        ]
+        self._imap_servers = [host for host in self._imap_servers if isinstance(host, str) and host]
         try:
             self._imap_port = int(imap_port or 993)
         except (TypeError, ValueError):
             self._imap_port = 993
         self._token_endpoint = str(token_endpoint or "").strip()
+        self._backend_name = self._normalize_backend_name(backend)
+        self._graph_api_base = str(graph_api_base or "").strip() or "https://graph.microsoft.com/v1.0"
+        self._imap_folder_names = ["INBOX", "Junk", "Deleted Items", "Trash"]
+        self._graph_folder_names = ["inbox", "junkemail", "deleteditems"]
+        self._backends: dict[str, OutlookMailboxBackend] = {
+            "imap": OutlookImapMailboxBackend(self),
+            "graph": OutlookGraphMailboxBackend(self),
+        }
+
+    @staticmethod
+    def _normalize_backend_name(value: Any) -> str:
+        backend = str(value or "graph").strip().lower() or "graph"
+        return backend if backend in {"graph", "imap"} else "graph"
 
     def _pop_account(self) -> dict:
         from sqlmodel import Session, select
-        from core.db import engine, OutlookAccountModel
+
+        from core.db import OutlookAccountModel, engine
 
         with self._lock:
             with Session(engine) as session:
@@ -3165,7 +3791,7 @@ class OutlookMailbox(BaseMailbox):
                     .order_by(OutlookAccountModel.id)
                 ).first()
                 if not account:
-                    raise RuntimeError("Outlook 账号池为空，请先在设置页批量导入")
+                    raise RuntimeError("微软邮箱账号池为空，请先在设置页批量导入")
 
                 payload = {
                     "id": account.id,
@@ -3182,18 +3808,65 @@ class OutlookMailbox(BaseMailbox):
         payload = self._pop_account()
         email = str(payload.get("email") or "").strip()
         if not email:
-            raise RuntimeError("Outlook 账号邮箱为空")
-        self._log(f"[Outlook] 取出账号: {email}（已从本地池移除）")
+            raise RuntimeError("微软邮箱账号邮箱为空")
+        password = str(payload.get("password") or "")
+        client_id = str(payload.get("client_id") or "")
+        refresh_token = str(payload.get("refresh_token") or "")
+        auth_mode = "oauth" if client_id and refresh_token else "password"
+        self._log(f"[微软邮箱] 取出账号: {email}（已从本地池移除）")
+        self._log(
+            "[微软邮箱] 账号认证信息: "
+            f"has_password={bool(password)} "
+            f"has_client_id={bool(client_id)} "
+            f"has_refresh_token={bool(refresh_token)} "
+            f"auth_mode={auth_mode}"
+        )
         return MailboxAccount(
             email=email,
             account_id=str(payload.get("id") or ""),
             extra={
-                "provider": "outlook",
-                "password": payload.get("password") or "",
-                "client_id": payload.get("client_id") or "",
-                "refresh_token": payload.get("refresh_token") or "",
+                "provider": "microsoft",
+                "password": password,
+                "client_id": client_id,
+                "refresh_token": refresh_token,
+                "outlook_backend": self._backend_name,
             },
         )
+
+    def requeue_account(self, account: MailboxAccount) -> None:
+        from sqlmodel import Session, select
+        from core.db import engine, OutlookAccountModel
+
+        email = str(getattr(account, "email", "") or "").strip()
+        extra = getattr(account, "extra", None) or {}
+        if not email:
+            return
+
+        password = str(extra.get("password") or "")
+        client_id = str(extra.get("client_id") or "")
+        refresh_token = str(extra.get("refresh_token") or "")
+
+        with self._lock:
+            with Session(engine) as session:
+                existing = session.exec(select(OutlookAccountModel).where(OutlookAccountModel.email == email)).first()
+                if existing:
+                    existing.enabled = True
+                    existing.updated_at = _utcnow()
+                    session.add(existing)
+                else:
+                    session.add(
+                        OutlookAccountModel(
+                            email=email,
+                            password=password,
+                            client_id=client_id,
+                            refresh_token=refresh_token,
+                            enabled=True,
+                            created_at=_utcnow(),
+                            updated_at=_utcnow(),
+                        )
+                    )
+                session.commit()
+        self._log(f"[微软邮箱] 账号已回退到本地池: {email}")
 
     def _token_endpoints(self) -> list[str]:
         if self._token_endpoint:
@@ -3213,49 +3886,176 @@ class OutlookMailbox(BaseMailbox):
                 "https://login.microsoftonline.com/common/oauth2/v2.0/token",
             ]
 
-    def _fetch_oauth_token(
-        self, *, email: str, client_id: str, refresh_token: str
-    ) -> str:
-        if not client_id or not refresh_token:
-            return ""
-        import requests
-
-        scope = ""
+    def _oauth_scope_candidates(
+        self,
+        preferred_backend: str | None = None,
+    ) -> list[tuple[str, str]]:
+        candidates: list[tuple[str, str]] = []
         try:
             from platforms.chatgpt.constants import MICROSOFT_SCOPES
 
-            scope = str(MICROSOFT_SCOPES.get("IMAP_NEW") or "").strip()
+            scope_map = {
+                "imap_new": str(MICROSOFT_SCOPES.get("IMAP_NEW") or "").strip(),
+                "outlook_default": "https://outlook.office.com/.default offline_access",
+                "graph_default": str(MICROSOFT_SCOPES.get("GRAPH_API") or "").strip(),
+                "empty": "",
+            }
         except Exception:
-            scope = "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
+            scope_map = {
+                "imap_new": "https://outlook.office.com/IMAP.AccessAsUser.All offline_access",
+                "outlook_default": "https://outlook.office.com/.default offline_access",
+                "graph_default": "https://graph.microsoft.com/.default",
+                "empty": "",
+            }
+
+        backend = self._normalize_backend_name(preferred_backend or self._backend_name)
+        ordered_labels = (
+            ["graph_default", "outlook_default", "imap_new", "empty"]
+            if backend == "graph"
+            else ["imap_new", "outlook_default", "graph_default", "empty"]
+        )
+        raw_candidates = [(label, scope_map.get(label, "")) for label in ordered_labels]
+
+        seen = set()
+        for label, scope in raw_candidates:
+            key = (str(label or "").strip(), str(scope or "").strip())
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(key)
+        return candidates
+
+    def _fetch_oauth_token_bundle(
+        self,
+        *,
+        email: str,
+        client_id: str,
+        refresh_token: str,
+        preferred_backend: str | None = None,
+    ) -> dict[str, Any]:
+        if not client_id or not refresh_token:
+            self._log(
+                f"[微软邮箱] OAuth token 跳过: email={email} has_client_id={bool(client_id)} has_refresh_token={bool(refresh_token)}"
+            )
+            return {}
+        import requests
 
         for endpoint in self._token_endpoints():
             endpoint = str(endpoint or "").strip()
             if not endpoint:
                 continue
-            payload = {
-                "client_id": client_id,
-                "refresh_token": refresh_token,
-                "grant_type": "refresh_token",
-            }
-            if scope:
-                payload["scope"] = scope
-            try:
-                resp = requests.post(
-                    endpoint,
-                    data=payload,
-                    timeout=20,
-                    proxies=self._proxy,
-                )
-                if resp.status_code >= 400:
+            for scope_label, scope in self._oauth_scope_candidates(preferred_backend):
+                payload = {
+                    "client_id": client_id,
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                }
+                if scope:
+                    payload["scope"] = scope
+                try:
+                    self._log(
+                        "[微软邮箱] OAuth token 请求: "
+                        f"email={email} endpoint={endpoint} scope_label={scope_label} has_scope={bool(scope)}"
+                    )
+                    resp = requests.post(
+                        endpoint,
+                        data=payload,
+                        timeout=20,
+                        proxies=self._proxy,
+                    )
+                    self._log(
+                        "[微软邮箱] OAuth token 响应: "
+                        f"email={email} endpoint={endpoint} scope_label={scope_label} status={resp.status_code}"
+                    )
+                    if resp.status_code >= 400:
+                        self._log(f"[微软邮箱] OAuth token 失败响应: {resp.text[:200]}")
+                        continue
+                    data = resp.json() if resp.content else {}
+                    access_token = str(data.get("access_token") or "").strip()
+                    if access_token:
+                        expires_in = data.get("expires_in")
+                        try:
+                            expires_in_value = max(int(expires_in or 0), 0)
+                        except (TypeError, ValueError):
+                            expires_in_value = 0
+                        self._log(f"[微软邮箱] OAuth access token 获取成功: {email} (scope_label={scope_label})")
+                        return {
+                            "access_token": access_token,
+                            "scope_label": scope_label,
+                            "expires_in": expires_in_value,
+                            "endpoint": endpoint,
+                        }
+                    self._log(f"[微软邮箱] OAuth token 响应未包含 access_token: keys={sorted(list(data.keys()))[:10]}")
+                except Exception as exc:
+                    self._log(
+                        "[微软邮箱] OAuth token 请求异常: "
+                        f"email={email} endpoint={endpoint} scope_label={scope_label} error={exc}"
+                    )
                     continue
-                data = resp.json() if resp.content else {}
-                access_token = str(data.get("access_token") or "").strip()
-                if access_token:
-                    self._log(f"[Outlook] OAuth access token 获取成功: {email}")
-                    return access_token
-            except Exception:
-                continue
-        return ""
+        self._log(f"[微软邮箱] OAuth token 获取失败，回退密码登录: {email}")
+        return {}
+
+    def _fetch_oauth_token(
+        self,
+        *,
+        email: str,
+        client_id: str,
+        refresh_token: str,
+        preferred_backend: str | None = None,
+    ) -> str:
+        bundle = self._fetch_oauth_token_bundle(
+            email=email,
+            client_id=client_id,
+            refresh_token=refresh_token,
+            preferred_backend=preferred_backend,
+        )
+        return str(bundle.get("access_token") or "").strip()
+
+    def _get_oauth_access_token(
+        self,
+        account: MailboxAccount,
+        *,
+        preferred_backend: str | None = None,
+    ) -> str:
+        extra = account.extra or {}
+        client_id = str(extra.get("client_id") or "").strip()
+        refresh_token = str(extra.get("refresh_token") or "").strip()
+        email_addr = str(account.email or "").strip()
+        if not client_id or not refresh_token:
+            raise RuntimeError("微软邮箱 OAuth 凭据缺失，无法获取 access token")
+
+        cache = extra.setdefault("_oauth_token_cache", {})
+        cache_key = self._normalize_backend_name(preferred_backend or self._backend_name)
+        cached = cache.get(cache_key) if isinstance(cache, dict) else None
+        now = time.time()
+        if isinstance(cached, dict):
+            access_token = str(cached.get("access_token") or "").strip()
+            expires_at = float(cached.get("expires_at") or 0)
+            if access_token and expires_at > now + 60:
+                return access_token
+
+        bundle = self._fetch_oauth_token_bundle(
+            email=email_addr,
+            client_id=client_id,
+            refresh_token=refresh_token,
+            preferred_backend=cache_key,
+        )
+        access_token = str(bundle.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("微软邮箱 OAuth access token 获取失败")
+
+        expires_in = bundle.get("expires_in")
+        try:
+            expires_in_value = max(int(expires_in or 0), 0)
+        except (TypeError, ValueError):
+            expires_in_value = 0
+        if isinstance(cache, dict):
+            cache[cache_key] = {
+                "access_token": access_token,
+                "expires_at": now + expires_in_value if expires_in_value else now + 300,
+                "scope_label": bundle.get("scope_label", ""),
+            }
+        return access_token
 
     def _imap_auth_oauth(self, imap_conn, *, email: str, access_token: str) -> None:
         auth_string = f"user={email}\x01auth=Bearer {access_token}\x01\x01"
@@ -3272,10 +4072,9 @@ class OutlookMailbox(BaseMailbox):
 
         access_token = ""
         if client_id and refresh_token:
-            access_token = self._fetch_oauth_token(
-                email=email_addr,
-                client_id=client_id,
-                refresh_token=refresh_token,
+            access_token = self._get_oauth_access_token(
+                account,
+                preferred_backend="imap",
             )
 
         last_error = None
@@ -3285,9 +4084,7 @@ class OutlookMailbox(BaseMailbox):
             if access_token:
                 try:
                     imap_conn = imaplib.IMAP4_SSL(host, self._imap_port, timeout=30)
-                    self._imap_auth_oauth(
-                        imap_conn, email=email_addr, access_token=access_token
-                    )
+                    self._imap_auth_oauth(imap_conn, email=email_addr, access_token=access_token)
                     return imap_conn
                 except Exception as exc:
                     last_error = exc
@@ -3307,7 +4104,97 @@ class OutlookMailbox(BaseMailbox):
                     except Exception:
                         pass
 
-        raise RuntimeError(f"Outlook IMAP 登录失败: {last_error}")
+        raise RuntimeError(f"微软邮箱 IMAP 登录失败: {last_error}")
+
+    def _resolve_backend(self, account: MailboxAccount) -> OutlookMailboxBackend:
+        extra = account.extra or {}
+        override = self._normalize_backend_name(extra.get("outlook_backend") or self._backend_name)
+        if override == "graph":
+            has_oauth = bool(
+                str(extra.get("client_id") or "").strip() and str(extra.get("refresh_token") or "").strip()
+            )
+            if not has_oauth:
+                self._log("[微软邮箱] Graph 后端需要 OAuth 凭据，当前账号缺少 client_id/refresh_token，自动切换 IMAP")
+                override = "imap"
+        return self._backends.get(override) or self._backends["graph"]
+
+    def _graph_headers(self, *, access_token: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+            "Prefer": 'outlook.body-content-type="text"',
+        }
+
+    def _graph_request_json(
+        self,
+        *,
+        method: str,
+        path: str,
+        access_token: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        import requests
+
+        url = f"{self._graph_api_base.rstrip('/')}/{path.lstrip('/')}"
+        resp = requests.request(
+            method,
+            url,
+            headers=self._graph_headers(access_token=access_token),
+            params=params or None,
+            timeout=20,
+            proxies=self._proxy,
+        )
+        if resp.status_code >= 400:
+            preview = (resp.text or "")[:300]
+            raise RuntimeError(f"Outlook Graph 请求失败: HTTP {resp.status_code} {preview}")
+        return resp.json() if resp.content else {}
+
+    def _graph_list_messages(
+        self,
+        *,
+        access_token: str,
+        folder: str,
+    ) -> list[dict[str, Any]]:
+        data = self._graph_request_json(
+            method="GET",
+            path=f"/me/mailFolders/{folder}/messages",
+            access_token=access_token,
+            params={
+                "$top": "25",
+                "$orderby": "receivedDateTime DESC",
+                "$select": "id,subject,bodyPreview,body,receivedDateTime,from,internetMessageId",
+            },
+        )
+        value = data.get("value") or []
+        return value if isinstance(value, list) else []
+
+    def _graph_get_message(
+        self,
+        *,
+        access_token: str,
+        message_id: str,
+    ) -> dict[str, Any]:
+        from urllib.parse import quote
+
+        return self._graph_request_json(
+            method="GET",
+            path=f"/me/messages/{quote(str(message_id or '').strip(), safe='')}",
+            access_token=access_token,
+            params={
+                "$select": "id,subject,bodyPreview,body,uniqueBody,receivedDateTime,from,internetMessageId",
+            },
+        )
+
+    def _graph_message_text(self, message: dict[str, Any]) -> str:
+        subject = str((message or {}).get("subject") or "").strip()
+        preview = str((message or {}).get("bodyPreview") or "").strip()
+
+        body = (message or {}).get("body") or {}
+        body_content = str(body.get("content") or "").strip() if isinstance(body, dict) else ""
+        unique_body = (message or {}).get("uniqueBody") or {}
+        unique_body_content = str(unique_body.get("content") or "").strip() if isinstance(unique_body, dict) else ""
+        combined = " ".join(part for part in [subject, preview, body_content, unique_body_content] if part)
+        return self._decode_raw_content(combined)
 
     def _decode_header_value(self, value: str) -> str:
         from email.header import decode_header
@@ -3360,23 +4247,13 @@ class OutlookMailbox(BaseMailbox):
         return self._decode_raw_content(combined)
 
     def get_current_ids(self, account: MailboxAccount) -> set:
-        imap_conn = None
         try:
-            imap_conn = self._open_imap(account)
-            imap_conn.select("INBOX", readonly=True)
-            status, data = imap_conn.uid("search", None, "ALL")
-            if status != "OK":
-                return set()
-            ids = data[0].split() if data and data[0] else []
-            return {uid.decode("utf-8", errors="ignore") for uid in ids}
-        except Exception:
+            backend = self._resolve_backend(account)
+            self._log(f"[微软邮箱] 当前收信后端: {backend.backend_name}")
+            return backend.get_current_ids(account)
+        except Exception as exc:
+            self._log(f"[微软邮箱] 获取当前邮件 ID 失败: {exc}")
             return set()
-        finally:
-            try:
-                if imap_conn:
-                    imap_conn.logout()
-            except Exception:
-                pass
 
     def wait_for_code(
         self,
@@ -3387,70 +4264,15 @@ class OutlookMailbox(BaseMailbox):
         code_pattern: str = None,
         **kwargs,
     ) -> str:
-        from email import message_from_bytes
-        from email.policy import default as email_default_policy
-
-        seen = {str(mid) for mid in (before_ids or set())}
-        exclude_codes = {
-            str(code).strip()
-            for code in (kwargs.get("exclude_codes") or set())
-            if str(code or "").strip()
-        }
-        keyword_lower = str(keyword or "").strip().lower()
-
-        def poll_once() -> Optional[str]:
-            imap_conn = None
-            try:
-                imap_conn = self._open_imap(account)
-                imap_conn.select("INBOX", readonly=True)
-                status, data = imap_conn.uid("search", None, "ALL")
-                if status != "OK":
-                    return None
-                ids = data[0].split() if data and data[0] else []
-                if len(ids) > 50:
-                    ids = ids[-50:]
-                for uid in ids:
-                    uid_str = (
-                        uid.decode("utf-8", errors="ignore")
-                        if isinstance(uid, bytes)
-                        else str(uid)
-                    )
-                    if not uid_str or uid_str in seen:
-                        continue
-                    seen.add(uid_str)
-                    status, msg_data = imap_conn.uid("fetch", uid, "(RFC822)")
-                    if status != "OK":
-                        continue
-                    raw = None
-                    for item in msg_data or []:
-                        if isinstance(item, tuple) and item[1]:
-                            raw = item[1]
-                            break
-                    if not raw:
-                        continue
-                    msg = message_from_bytes(raw, policy=email_default_policy)
-                    text = self._extract_message_text(msg)
-                    if keyword_lower and keyword_lower not in text.lower():
-                        continue
-                    code = self._safe_extract(text, code_pattern)
-                    if code:
-                        if code in exclude_codes:
-                            continue
-                        return code
-            except Exception:
-                return None
-            finally:
-                try:
-                    if imap_conn:
-                        imap_conn.logout()
-                except Exception:
-                    pass
-            return None
-
-        return self._run_polling_wait(
+        backend = self._resolve_backend(account)
+        self._log(f"[微软邮箱] OTP 收信后端: {backend.backend_name}")
+        return backend.wait_for_code(
+            account,
+            keyword=keyword,
             timeout=timeout,
-            poll_interval=5,
-            poll_once=poll_once,
+            before_ids=before_ids,
+            code_pattern=code_pattern,
+            **kwargs,
         )
 
 
@@ -3518,9 +4340,7 @@ class FreemailMailbox(BaseMailbox):
         if target_domain and email and "@" in email:
             actual_domain = email.split("@", 1)[1].strip().lower()
             if actual_domain != target_domain.lower():
-                self._log(
-                    f"[Freemail] 指定域名 {target_domain} 未命中，实际返回 {actual_domain}"
-                )
+                self._log(f"[Freemail] 指定域名 {target_domain} 未命中，实际返回 {actual_domain}")
 
         self._email = email
         print(f"[Freemail] 生成邮箱: {email}")
@@ -3545,9 +4365,7 @@ class FreemailMailbox(BaseMailbox):
             if isinstance(payload, list):
                 for item in payload:
                     if isinstance(item, dict):
-                        _append_domain(
-                            item.get("domain") or item.get("name") or item.get("value")
-                        )
+                        _append_domain(item.get("domain") or item.get("name") or item.get("value"))
                     else:
                         _append_domain(item)
             elif isinstance(payload, dict):
@@ -3555,11 +4373,7 @@ class FreemailMailbox(BaseMailbox):
                 if isinstance(candidates, list):
                     for item in candidates:
                         if isinstance(item, dict):
-                            _append_domain(
-                                item.get("domain")
-                                or item.get("name")
-                                or item.get("value")
-                            )
+                            _append_domain(item.get("domain") or item.get("name") or item.get("value"))
                         else:
                             _append_domain(item)
             self._domains = normalized
@@ -3589,9 +4403,7 @@ class FreemailMailbox(BaseMailbox):
     ) -> str:
         seen = set(before_ids or [])
         exclude_codes = {
-            str(code).strip()
-            for code in (kwargs.get("exclude_codes") or set())
-            if str(code or "").strip()
+            str(code).strip() for code in (kwargs.get("exclude_codes") or set()) if str(code or "").strip()
         }
 
         def poll_once() -> Optional[str]:
@@ -3613,9 +4425,7 @@ class FreemailMailbox(BaseMailbox):
                             continue
                         return code
                     # 兜底：从 preview 提取
-                    text = (
-                        str(msg.get("preview", "")) + " " + str(msg.get("subject", ""))
-                    )
+                    text = str(msg.get("preview", "")) + " " + str(msg.get("subject", ""))
                     code = self._safe_extract(text, code_pattern)
                     if code:
                         if code in exclude_codes:

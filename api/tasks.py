@@ -349,6 +349,11 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
                     stopped = True
                 else:
                     errors.append(result.message)
+                _task_store.update_counters(
+                    task_id,
+                    success=success,
+                    registered=success + skipped + len(errors),
+                )
                 if stopped or control.is_stop_requested():
                     stopped = True
                     for pending in futures:
@@ -360,6 +365,7 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
             task_id,
             status="failed",
             success=success,
+            registered=success + skipped + len(errors),
             skipped=skipped,
             errors=errors,
             error=str(e),
@@ -379,6 +385,7 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
         task_id,
         status=final_status,
         success=success,
+        registered=success + skipped + len(errors),
         skipped=skipped,
         errors=errors,
     )
@@ -464,11 +471,17 @@ async def stream_logs(task_id: str, since: int = 0):
         sent = since
         while True:
             logs, status = _task_store.log_state(task_id)
+            snapshot = _task_store.snapshot(task_id)
+            counters = {
+                "success": int(snapshot.get("success") or 0),
+                "registered": int(snapshot.get("registered") or 0),
+                "total": int(snapshot.get("total") or 0),
+            }
             while sent < len(logs):
-                yield f"data: {json.dumps({'line': logs[sent]})}\n\n"
+                yield f"data: {json.dumps({'line': logs[sent], **counters})}\n\n"
                 sent += 1
             if status in ("done", "failed", "stopped"):
-                yield f"data: {json.dumps({'done': True, 'status': status})}\n\n"
+                yield f"data: {json.dumps({'done': True, 'status': status, **counters})}\n\n"
                 break
             await asyncio.sleep(0.5)
 
